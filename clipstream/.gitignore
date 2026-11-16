@@ -1,0 +1,13 @@
+# Caches and local env only.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.git/
+.github/
+.cursor/
+.DS_Store
+*.safetensors
+
+# Version-rule snapshots (see VERSION.md). Kept on disk, out of git.
+archive/
