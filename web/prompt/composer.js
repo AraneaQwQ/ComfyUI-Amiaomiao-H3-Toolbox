@@ -1,7 +1,15 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { NODE_ID } from "./state.js";
-import { ComposerPanel } from "./editor.js";
+import { ComposerPanel } from "./text_editor.js";
+
+function hideLegacyFrameWidgets(node) {
+    for (const widget of node.widgets || []) {
+        if (["mc_overlap_frames", "mc_trim_frames"].includes(widget.name)) {
+            widget.options = { ...widget.options, hidden: true };
+        }
+    }
+}
 
 if (!document.getElementById("amiaomiao-h3-prompt-style")) {
     const link = document.createElement("link");
@@ -15,6 +23,7 @@ app.registerExtension({
         const created = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = created?.apply(this, arguments);
+            hideLegacyFrameWidgets(this);
             const documentWidget = this.widgets.find(widget => widget.name === "document");
             if (!documentWidget) return result;
             documentWidget.options = { ...documentWidget.options, hidden: true };
@@ -36,6 +45,7 @@ app.registerExtension({
         const configure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             const result = configure?.apply(this, arguments);
+            hideLegacyFrameWidgets(this);
             const widget = this.widgets?.find(w => w.name === "document");
             if (widget) this.h3PromptPanel?.load(widget.value);
             return result;

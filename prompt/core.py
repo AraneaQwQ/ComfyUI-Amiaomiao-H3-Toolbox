@@ -26,7 +26,7 @@ def default_document():
         "assets": [], "definitions": [],
         "shots": [{"id": "shot-first", "start_ms": 0, "runs": []}],
         "mc": {"enabled": False, "mode": "continue", "fps": 24,
-               "overlap_frames": None, "trim_frames": None, "carry": [], "source": "manual"},
+               "overlap_frames": 22, "trim_frames": 22, "carry": [], "source": "manual"},
         "soundscape": "", "music": {"enabled": False, "text": ""},
         "overrides": {},
     }
@@ -63,6 +63,10 @@ def parse_document(raw):
         raise ValueError("六段锁定配置格式错误。")
     if not isinstance(doc["native_text"], str):
         raise ValueError("原生输入必须是文本。")
+    if "text_fields" in doc and (
+            not isinstance(doc["text_fields"], dict)
+            or any(not isinstance(doc["text_fields"].get(key), str) for key in FIELDS)):
+        raise ValueError("六分区文本格式错误。")
     for key in ("summary", "style", "soundscape"):
         if not isinstance(doc[key], str):
             raise ValueError(f"{key} 必须是文本。")
@@ -89,6 +93,9 @@ def compile_document(raw, *, mc_overlap_frames=None, mc_trim_frames=None):
         return {"prompt": doc["native_text"], "document": doc, "fields": {},
                 "issues": [], "speaker_map": {}, "translation": "原生文本原样输出"}
 
+    if "text_fields" in doc:
+        return compile_text_fields(doc)
+
     def number(value, path, *, integer=False, minimum=0, maximum=3_600_000):
         if isinstance(value, bool) or not isinstance(value, (int, float, Fraction)):
             issue("error", path, "请填写有效数值。")
@@ -105,10 +112,10 @@ def compile_document(raw, *, mc_overlap_frames=None, mc_trim_frames=None):
     duration = number(doc["duration_ms"], "duration_ms", minimum=1)
     duration = (duration or 10000) / 1000
     mc = {"fps": 24, "mode": "continue", "carry": [], **doc["mc"]}
-    if mc_overlap_frames is not None and mc_overlap_frames >= 0:
-        mc.update(enabled=True, overlap_frames=mc_overlap_frames, source="connected")
-    if mc_trim_frames is not None and mc_trim_frames >= 0:
-        mc.update(enabled=True, trim_frames=mc_trim_frames, source="connected")
+    # Motion Context 边界默认由节点数值框提供，用户直接填写即可，不需要接线。
+    mc.update(enabled=mc.get("enabled", False))
+    if mc.get("enabled"):
+        mc.update(overlap_frames=mc_overlap_frames, trim_frames=mc_trim_frames, source="manual")
     doc["mc"] = mc
     overlap = trim = None
     if mc.get("enabled"):
@@ -117,7 +124,7 @@ def compile_document(raw, *, mc_overlap_frames=None, mc_trim_frames=None):
             issue("warning", "mc.fps", "本工作流按 24 fps 设计，请核对接续节点实际帧率。")
         for key in ("overlap_frames", "trim_frames"):
             if mc.get(key) is None:
-                issue("warning", "mc." + key, "实际边界待确认；请接线读取或手动填写，不按默认 22 帧推断。")
+                issue("error", "mc." + key, "Motion Context 边界未设置；请在节点上填写实际帧数。")
             else:
                 frames = number(mc[key], "mc." + key, integer=True, maximum=4096)
                 if frames is not None and fps:
@@ -172,6 +179,7 @@ def compile_document(raw, *, mc_overlap_frames=None, mc_trim_frames=None):
             return "[未知素材]"
         if expected == "Audio" and asset.get("kind") == "video" and not asset.get("audio_enabled"):
             issue("error", path, "需显式启用该视频的原音轨，并指定独立 Audio 编号。")
+        # 简化模式：未经过 definition 的素材，允许按 asset 自己的 slot / audio_slot 直接引用
         slot = asset.get("audio_slot") if kind == "Audio" and asset.get("kind") == "video" else asset.get("slot")
         if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 99:
             issue("error", path, "请按实际参考输入接线指定正式编号；不能用卡片排列猜编号。")
@@ -417,4 +425,46 @@ def compile_document(raw, *, mc_overlap_frames=None, mc_trim_frames=None):
         "prompt": "\n\n".join(key + ":\n" + fields[key] for key in FIELDS),
         "document": doc, "fields": fields, "issues": issues, "speaker_map": speakers,
         "translation": "确定性编排；未调用翻译或生成模型",
+    }
+
+
+def compile_text_fields(doc):
+    """Resolve stable media references without interpreting the user's prose."""
+    issues = []
+    assets = {asset["id"]: asset for asset in doc["assets"]}
+
+    def report(level, path, message):
+        row = {"level": level, "path": path, "message": message}
+        if row not in issues:
+            issues.append(row)
+
+    def resolve(match, path):
+        identity = match[2]
+        audio_track = identity.endswith("#audio")
+        asset = assets.get(identity[:-6] if audio_track else identity)
+        if match[1] != "ref" or not asset:
+            report("error", path, "引用的素材不存在。")
+            return "[失效引用]"
+        if asset.get("skip") or asset.get("missing") or audio_track and not asset.get("audio_enabled"):
+            report("error", path, "引用的素材或音轨已停用或失效。")
+        kind = "Audio" if audio_track else {"image": "Picture", "video": "Video", "audio": "Audio"}.get(asset.get("kind"))
+        slot = asset.get("audio_slot" if audio_track else "slot")
+        if not kind or isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 99:
+            report("error", path, "引用素材缺少正式输入编号，请在素材卡上确认。")
+            return "[待确认编号]"
+        return f"<{kind} {slot}>"
+
+    fields = {}
+    for key in FIELDS:
+        fields[key] = TOKEN.sub(lambda match: resolve(match, key), doc["text_fields"][key])
+        if re.search(r"【[^】]*】", fields[key]):
+            report("warning", key, "此区还有待填写内容。")
+    definitions = set(re.findall(r"<Subject\s+(\d+)>", fields["subject_definitions"]))
+    for key in FIELDS[1:]:
+        for number in set(re.findall(r"<Subject\s+(\d+)>", fields[key])) - definitions:
+            report("warning", key, f"Subject {number} 尚未在参考定义区定义。")
+    return {
+        "prompt": "\n\n".join(key + ":\n" + fields[key] for key in FIELDS),
+        "document": doc, "fields": fields, "issues": issues, "speaker_map": {},
+        "translation": "中文文本编排",
     }

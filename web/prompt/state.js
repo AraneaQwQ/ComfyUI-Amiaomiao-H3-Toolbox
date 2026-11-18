@@ -26,7 +26,13 @@ export function parseDocument(raw) {
     doc.music = { enabled: false, text: "", ...doc.music };
     doc.ui = { ...defaultDocument().ui, ...doc.ui };
     doc.ui.asset_groups_collapsed = { ...doc.ui.asset_groups_collapsed };
+    doc.assets = doc.assets.map(asset => Object.hasOwn(asset, "loader_slot")
+        ? { ...asset, slot: loaderReferenceSlot(asset), mapping_changed: false } : asset);
     return doc;
+}
+export function loaderReferenceSlot(asset) {
+    return !asset.skip && !asset.ambiguous && Number.isInteger(asset.loader_slot) && asset.loader_slot >= 0
+        ? asset.loader_slot + 1 : null;
 }
 export function addShot(doc) {
     const shot = { id: uid("shot"), start_ms: null, runs: [] };
@@ -76,9 +82,10 @@ export function mergeAssets(previous, incoming) {
         const before = old.get(asset.id);
         if (!before) added++;
         else if (JSON.stringify({ ...before, slot: null }) !== JSON.stringify({ ...asset, slot: null })) updated++;
-        return { ...before, ...asset, slot: before?.slot ?? asset.slot,
-            mapping_changed: !!before?.mapping_changed || (before?.slot != null &&
-                asset.slot != null && before.slot !== asset.slot),
+        const fromLoader = Object.hasOwn(asset, "loader_slot");
+        return { ...before, ...asset, slot: fromLoader ? loaderReferenceSlot(asset) : before?.slot ?? asset.slot,
+            mapping_changed: !fromLoader && (!!before?.mapping_changed || (before?.slot != null &&
+                asset.slot != null && before.slot !== asset.slot)),
             audio_slot: before?.audio_slot ?? null, audio_enabled: before?.audio_enabled ?? false,
             alias: before?.alias ?? "" };
     });
@@ -109,20 +116,109 @@ export function selectorsFromGraph(nodes) {
     return { selectors, errors };
 }
 export function directSlot(asset, graph) {
-    if (asset.ambiguous || asset.skip || asset.loader_slot == null) return null;
+    if (asset.ambiguous || asset.skip) return null;
+    if (Object.hasOwn(asset, "loader_slot")) return loaderReferenceSlot(asset);
     const node = graph.getNodeById(Number(asset.node_id)) ?? graph.getNodeById(asset.node_id);
-    const output = node?.outputs?.[asset.loader_slot];
+    // 视频节点没有 loader_slot，需要看节点的 IMAGE 输出
+    const outputSlot = asset.loader_slot ?? node?.outputs?.findIndex(o => o.type === "IMAGE" || o.type === "VIDEO" || o.type === "AUDIO");
+    const output = node?.outputs?.[outputSlot];
     const slots = new Set();
     for (const id of output?.links ?? []) {
         const link = graph.links?.[id];
         const target = graph.getNodeById(link?.target_id);
         if (!target || !String(target.type).includes("MiniMaxH3")) continue;
         const name = target.inputs?.[link.target_slot]?.name ?? "";
-        const match = name.match(asset.kind === "image" ? /(?:^|\.)ref_image_(\d+)$/ : /(?:^|\.)ref_audio_(\d+)$/);
+        const pattern = {
+            image: /(?:^|\.)ref_image_(\d+)$/,
+            audio: /(?:^|\.)ref_audio_(\d+)$/,
+            video: /(?:^|\.)ref_video_(\d+)$/
+        }[asset.kind];
+        const match = name.match(pattern);
         if (match) slots.add(Number(match[1]) + 1);
     }
     return slots.size === 1 ? [...slots][0] : null;
 }
+
+export const ASSET_PURPOSES = {
+    image: [
+        ["Picture:first frame", "首帧 / 关键帧"],
+        ["Subject:character", "角色外貌"],
+        ["Subject:environment", "场景环境"],
+        ["Subject:costume", "服装道具"],
+        ["Subject:style", "画风效果"],
+    ],
+    audio: [
+        ["Audio:voice", "音色参考"],
+        ["Audio:fully_copy", "原声复制"],
+        ["Audio:ambience", "环境声"],
+        ["Audio:music", "观众配乐"],
+    ],
+    video: [
+        ["Video:camera", "运镜与节奏"],
+        ["Video:continuation", "接续源"],
+        ["Video:editing", "编辑源"],
+        ["Subject:motion", "动作姿态"],
+    ],
+};
+
+export function applyAssetPurpose(doc, assetId, purposeKey) {
+    const asset = doc.assets.find(a => a.id === assetId);
+    if (!asset || asset.skip || asset.missing) return;
+    const [kind, purpose] = purposeKey.split(":");
+    if (kind === "Picture") {
+        doc.definitions.push({
+            id: uid("definition"), name: asset.alias || asset.label || "", kind: "Picture",
+            purpose, description: ``, sources: [{ asset_id: asset.id, role: "" }],
+            relation: "fully_preserved", keep: "", change: "", scope: []
+        });
+    } else if (kind === "Video") {
+        doc.definitions.push({
+            id: uid("definition"), name: asset.alias || asset.label || "", kind: "Video",
+            purpose: purpose === "camera" ? "camera and pacing reference" : purpose + " source",
+            description: ``, sources: [{ asset_id: asset.id, role: "" }],
+            relation: purpose === "camera" ? "weak_reference" : "fully_preserved", keep: "", change: "", scope: []
+        });
+    } else if (kind === "Audio") {
+        doc.definitions.push({
+            id: uid("definition"), name: asset.alias || asset.label || "", kind: "Audio",
+            purpose, description: ``, sources: [{ asset_id: asset.id, role: "" }],
+            relation: purpose === "fully_copy" ? "fully_copy" : "reference", keep: "", change: "", scope: []
+        });
+    } else if (kind === "Subject") {
+        // 同 purpose 的 Subject 自动合并
+        let subject = doc.definitions.find(d => d.kind === "Subject" && d.purpose === purpose);
+        if (!subject) {
+            subject = {
+                id: uid("definition"), name: asset.alias || asset.label || "", kind: "Subject",
+                purpose, description: ``, sources: [],
+                relation: "fully_preserved", keep: "", change: "", scope: []
+            };
+            doc.definitions.push(subject);
+        }
+        if (!subject.sources.some(s => s.asset_id === asset.id)) {
+            subject.sources.push({ asset_id: asset.id, role: "" });
+        }
+    }
+}
+
+export function autoDefineAssets(doc) {
+    // 只为尚未分配用途的素材生成默认 Picture/Video/Audio 定义
+    const usedAssetIds = new Set(doc.definitions.flatMap(d => d.sources.map(s => s.asset_id)));
+    for (const asset of doc.assets) {
+        if (asset.skip || asset.missing || usedAssetIds.has(asset.id)) continue;
+        if (asset.kind === "image") {
+            applyAssetPurpose(doc, asset.id, "Picture:first frame");
+        } else if (asset.kind === "video") {
+            applyAssetPurpose(doc, asset.id, "Video:camera");
+            if (asset.audio_enabled) {
+                applyAssetPurpose(doc, asset.id, "Audio:fully_copy");
+            }
+        } else if (asset.kind === "audio") {
+            applyAssetPurpose(doc, asset.id, "Audio:voice");
+        }
+    }
+}
+
 export function mcCandidates(nodes) {
     return nodes.filter(n => String(n.type).replace(/^AmiaomiaoH3_/, "") === "MiniMaxH3MotionContextClipStream")
         .map(n => ({ id: String(n.id), label: n.title || String(n.id),

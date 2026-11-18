@@ -1,5 +1,5 @@
 import { clone, uid, defaultDocument, parseDocument, addShot, removeShot, moveShot, shotLabels,
-    mergeAssets, selectorsFromGraph, directSlot, mcCandidates, runsFromText, textFromRuns, createHistory, FIELDS } from "./state.js";
+    mergeAssets, selectorsFromGraph, directSlot, autoDefineAssets, applyAssetPurpose, ASSET_PURPOSES, mcCandidates, runsFromText, textFromRuns, createHistory, FIELDS } from "./state.js";
 import { VISUAL, AUDIO, TASKS, PURPOSES, LANGUAGES, DELIVERY, HELP } from "./catalog.js";
 
 const el = (tag, className, text) => {
@@ -186,16 +186,37 @@ export class ComposerPanel {
         heading.append(el("h3", "", title));
         const help = HELP[key];
         const body = el("div", "h3p-section-body");
+        let details;
         if (help) {
-            const details = el("details", "h3p-help");
+            details = el("details", "h3p-help");
             details.open = this.helpOpen?.get(key) ?? false;
-            const toggle = el("summary", "", "写法与示例");
-            details.append(toggle);
-            for (const [index, text] of help.entries()) details.append(el("p", "", ["这里写什么：", "示例（未绑定）：", "常见错误："][index] + text));
-            details.append(button("复制示例", "copy", () => this.copy(help[1])));
-            heading.append(details);
+            details.id = `h3p-help-${this.node.id}-${key}`;
+            const summary = el("summary", "", "使用说明");
+            summary.hidden = true;
+            details.append(summary);
+            const toggle = button("使用说明", "info-circle", () => {
+                details.open = !details.open;
+                this.helpOpen ??= new Map();
+                this.helpOpen.set(key, details.open);
+                update();
+            });
+            toggle.classList.add("h3p-help-toggle");
+            toggle.setAttribute("aria-controls", details.id);
+            const update = () => {
+                toggle.setAttribute("aria-expanded", String(details.open));
+                toggle.classList.toggle("h3p-active", details.open);
+            };
+            update();
+            for (const [index, text] of help.entries()) {
+                const row = el("div", index === 2 ? "h3p-guidance-caution" : "h3p-help-row");
+                row.append(el("strong", "", ["使用规则", "用法说明", "重点注意"][index]), el("p", "", text));
+                details.append(row);
+            }
+            heading.append(toggle);
         }
-        section.append(heading, body); parent.append(section);
+        section.append(heading);
+        if (details) section.append(details);
+        section.append(body); parent.append(section);
         if (!open) body.hidden = true;
         return { section, heading, body };
     }
@@ -413,25 +434,42 @@ export class ComposerPanel {
         this.refreshButton.disabled = true; this.setStatus("正在读取素材记录…");
         try {
             const { selectors, errors } = selectorsFromGraph(this.graph?._nodes || []);
+            for (const selector of selectors) selector.previously_loaded = this.doc.assets.some(asset =>
+                asset.node_id === selector.node_id && asset.kind === "video");
             const response = await this.post("assets", { selectors });
             for (const asset of response.assets) {
                 if (asset.slot == null && this.graph) asset.slot = directSlot(asset, this.graph);
             }
             const merged = mergeAssets(this.doc.assets, response.assets);
             this.doc.assets = merged.assets;
+            if (!this.doc.text_fields) autoDefineAssets(this.doc);
             this.assetNotice = `新增 ${merged.added}，更新 ${merged.updated}，失效或跳过 ${merged.missing}`;
-            this.assetErrors = [...errors, ...response.errors.map(row => `${row.node_id}：${row.message}`)];
+            const describe = row => `${selectors.find(item => item.node_id === row.node_id)?.node_title || `节点 ${row.node_id}`}：${row.message}`;
+            const notices = (response.notices || []).map(describe);
+            if (notices.length) this.assetNotice += "；" + notices.join("；");
+            this.assetErrors = [...errors, ...response.errors.map(describe)];
             this.structural(() => {});
         } catch (error) { this.setStatus(error.message, true); }
         finally { if (this.refreshButton) this.refreshButton.disabled = false; }
     }
+    closePreview() {
+        const dialog = this.previewDialog;
+        if (!dialog) return;
+        this.previewDialog = null;
+        dialog.querySelectorAll("audio,video").forEach(media => media.pause());
+        if (dialog.open) dialog.close();
+        dialog.remove();
+    }
     previewAsset(asset) {
-        this.previewDialog?.remove();
+        this.closePreview();
         const dialog = el("dialog", "h3p-root h3p-media-dialog");
-        dialog.append(el("h3", "", asset.alias || asset.label));
+        dialog.setAttribute("aria-label", "素材预览");
+        dialog.append(el("h3", "h3p-media-title", asset.alias || asset.label || "素材预览"));
+        const stage = el("div", "h3p-media-stage");
         const url = asset.preview_url || asset.thumbnail_url;
         if (url) {
             const tag = asset.kind === "audio" ? "audio" : asset.kind === "video" && asset.preview_url ? "video" : "img";
+            dialog.dataset.media = tag;
             const media = el(tag); media.src = url; media.alt = asset.label;
             if (tag !== "img") {
                 media.controls = true; media.preload = "metadata";
@@ -444,12 +482,18 @@ export class ComposerPanel {
                     });
                 }
             }
-            dialog.append(media);
-        } else dialog.append(el("p", "", "该归档没有可用播放文件或预览。"));
-        const close = () => { dialog.querySelectorAll("audio,video").forEach(m => m.pause()); dialog.close(); dialog.remove(); };
-        dialog.append(button("关闭", "times", close));
+            stage.append(media);
+        } else {
+            dialog.dataset.media = "empty";
+            stage.append(el("p", "", "该归档没有可用播放文件或预览。"));
+        }
+        const close = () => this.closePreview();
+        const footer = el("div", "h3p-media-footer");
+        footer.append(button("关闭", "times", close));
+        dialog.append(stage, footer);
         dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
-        document.body.append(dialog); dialog.showModal(); this.previewDialog = dialog;
+        dialog.addEventListener("close", () => { if (this.previewDialog === dialog) close(); });
+        document.body.append(dialog); this.previewDialog = dialog; dialog.showModal();
     }
     renderAssets(parent) {
         const { heading, body } = this.section("素材", "assets", parent);
@@ -507,12 +551,29 @@ export class ComposerPanel {
                 const image = el("img"); image.src = asset.thumbnail_url; image.alt = asset.label; image.loading = "lazy"; preview.prepend(image);
             }
             const name = el("div", "h3p-asset-name");
-            name.append(el("strong", "", asset.label), el("small", "", asset.source + (asset.missing ? " · 已失效" : asset.skip ? " · 已跳过" : "")));
-            name.title = asset.label + "\n" + asset.source;
+            const labelTag = asset.slot ? "<" + ({ image: "Picture", audio: "Audio", video: "Video" }[asset.kind]) + " " + asset.slot + ">" : "未分配";
+            name.append(el("strong", "", asset.label), el("small", "", labelTag + " · " + asset.source + (asset.missing ? " · 已失效" : asset.skip ? " · 已跳过" : "")));
+            name.title = asset.label + "\n" + labelTag + "\n" + asset.source;
             row.append(preview, name);
             const fields = el("div", "h3p-asset-fields"); row.append(fields);
             field(fields, "别名", input(asset.alias, v => { asset.alias = v; this.commit("asset." + asset.id); }, "显示别名"));
             if (asset.mapping_changed) row.append(el("span", "h3p-warning", "接线编号已变化，请重新确认正式编号。"));
+            const purposes = ASSET_PURPOSES[asset.kind] || [];
+            const currentPurpose = this.doc.definitions.find(d =>
+                d.sources.some(s => s.asset_id === asset.id) && d.kind !== "Subject"
+            )?.purpose || (asset.kind === "image" ? "first frame" : asset.kind === "video" ? "camera and pacing reference" : "voice");
+            const purposeKey = purposes.find(p => p[1] && currentPurpose.includes(p[0].split(":")[1]))?.[0] || purposes[0]?.[0];
+            field(fields, "用途", select(
+                purposes.map(p => [p[0], p[1]]),
+                purposeKey,
+                value => this.structural(() => {
+                    this.doc.definitions = this.doc.definitions.filter(d =>
+                        !(d.sources.some(s => s.asset_id === asset.id) && d.kind !== "Subject")
+                    );
+                    applyAssetPurpose(this.doc, asset.id, value);
+                }),
+                "素材用途"
+            ));
             const slot = input(asset.slot, v => {
                 asset.slot = v; asset.mapping_changed = false; this.commit("slot." + asset.id);
             }, "正式输入编号", "number");
@@ -804,7 +865,9 @@ export class ComposerPanel {
         }));
         if (this.doc.mode === "compose") output.append(button("从编排结果填入原生模式", "arrow-right", () => this.prepareNative(output)));
         this.issuesArea = el("div", "h3p-issues"); output.append(this.issuesArea);
-        this.previewArea = el("div", "h3p-preview-area"); output.append(this.previewArea); this.renderResults();
+        this.previewArea = el("div", "h3p-preview-area"); output.append(this.previewArea);
+        output.insertBefore(el("p", "", "点击下方按钮切换六段式输出："), this.issuesArea.nextSibling);
+        this.renderResults();
         body.scrollTop = scrollTop;
         if (this.renderedMode && this.renderedMode !== this.doc.mode) this.reveal(body);
         this.renderedMode = this.doc.mode;
@@ -857,24 +920,43 @@ export class ComposerPanel {
             return;
         }
         const names = ["定义", "概要", "保留关系", "详细镜头", "环境声音", "观众配乐"];
+        const outputTabs = el("div", "h3p-output-tabs");
+        const outputBodies = el("div", "h3p-output-bodies");
+        const outputViews = [];
         for (const [index, key] of FIELDS.entries()) {
-            const details = el("details", "h3p-output-section"), summary = el("summary", "", names[index]);
-            details.dataset.outputField = key;
-            details.open = this.outputOpen.get(key) ?? (key === "detailed_description");
+            const tab = el("button", "h3p-output-tab", names[index]);
+            tab.dataset.outputField = key;
+            tab.type = "button";
+            const body = el("div", "h3p-output-body");
+            body.dataset.outputField = key;
             const override = this.doc.overrides[key];
             const controls = el("div", "h3p-row");
             controls.append(checkbox("手动修改并锁定此段", override?.locked, locked => this.structural(() => {
                 this.doc.overrides[key] = { text: override?.text ?? result.fields[key], locked };
             })));
-            details.append(summary, el("small", "h3p-official-field", key), controls);
+            body.append(el("small", "h3p-official-field", key), controls);
             if (override?.locked) {
                 const textarea = el("textarea", "h3p-override"); textarea.value = override.text;
                 textarea.setAttribute("aria-label", names[index] + "锁定文本");
                 textarea.addEventListener("input", () => { override.text = textarea.value; this.commit("override." + key); });
-                details.append(textarea);
-            } else details.append(el("pre", "h3p-output-text", result.fields[key]));
-            this.previewArea.append(details);
+                body.append(textarea);
+            } else body.append(el("pre", "h3p-output-text", result.fields[key]));
+            outputTabs.append(tab); outputBodies.append(body); outputViews.push({ tab, body, key });
         }
+        const activeField = this.outputActiveField ?? "detailed_description";
+        for (const { tab, body, key } of outputViews) {
+            const isActive = key === activeField;
+            tab.classList.toggle("h3p-active", isActive);
+            body.hidden = !isActive;
+            tab.addEventListener("click", () => {
+                this.outputActiveField = key;
+                for (const v of outputViews) {
+                    v.tab.classList.toggle("h3p-active", v.key === key);
+                    v.body.hidden = v.key !== key;
+                }
+            });
+        }
+        this.previewArea.append(outputTabs, outputBodies);
         if (this.body) this.body.scrollTop = scrollTop;
     }
     async copy(text) {
@@ -883,6 +965,6 @@ export class ComposerPanel {
     }
     dispose() {
         this.disposed = true; clearTimeout(this.compileTimer); this.lifetime.abort();
-        this.hideHint(); this.closeReferenceMenu(); this.previewDialog?.remove(); this.root.remove();
+        this.hideHint(); this.closeReferenceMenu(); this.closePreview(); this.root.remove();
     }
 }

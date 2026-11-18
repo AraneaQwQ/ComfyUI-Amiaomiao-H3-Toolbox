@@ -38,7 +38,7 @@ def _identity(parts):
 def read_assets(selectors, roots):
     if not isinstance(selectors, list) or len(selectors) > 300:
         raise ValueError("素材来源数量超出范围。")
-    output, errors = [], []
+    output, errors, notices = [], [], []
     for selection in selectors:
         try:
             if not isinstance(selection, dict):
@@ -80,7 +80,10 @@ def read_assets(selectors, roots):
             root = roots["output"]
             legacy = bool(selection.get("legacy"))
             project = str(selection.get("project") or "")
-            if not project or project in (".", "..") or "/" in project or "\\" in project:
+            if not project:
+                notices.append({"node_id": node_id, "message": "尚未选择视频素材库。"})
+                continue
+            if project in (".", "..") or "/" in project or "\\" in project:
                 raise ValueError("项目名称无效。")
             family = selection["family"]
             if family == "clipstream":
@@ -110,7 +113,10 @@ def read_assets(selectors, roots):
                         raise ValueError("视频选择匹配多个归档，请选择明确 clip_id。")
                     record = matches[0] if matches else None
                 if not record:
-                    raise ValueError("未找到所选归档视频。")
+                    if not records and selected.lower() in ("latest", "", "0", "auto", "default") and not selection.get("previously_loaded"):
+                        notices.append({"node_id": node_id, "message": "尚未选择视频，当前素材库没有可用卡片。"})
+                        continue
+                    raise ValueError("所选归档视频已不可用，请重新选择视频卡片。")
                 directory = _inside(project_path, record["clip_id"])
                 video_name = record.get("video_file") or "video.mp4"
                 if want_dual:
@@ -127,15 +133,23 @@ def read_assets(selectors, roots):
                 name = record.get("shot_tag") or record["clip_id"]
                 file_exists = directory.is_dir()
             else:
+                selected_id = selection.get("segment_id")
+                if selected_id in (None, "", 0):
+                    notices.append({"node_id": node_id, "message": "尚未选择视频卡片。"})
+                    continue
                 uploads = selection.get("source_mode") == "uploads"
                 folder = ("h3-lvm-video-uploads" if legacy else "amiaomiao-h3-video-uploads") if uploads else (
                     "h3-lvm" if legacy else "amiaomiao-h3-segments")
                 project_path = _inside(root, folder, project)
                 index = _json(_inside(project_path, "h3lvm_upload_index.json" if uploads else "h3lvm_index.json"))
-                record = next((r for r in index.get("videos" if uploads else "segments", [])
-                               if isinstance(r, dict) and r.get("segment_id") == selection.get("segment_id")), None)
+                records = index.get("videos" if uploads else "segments", [])
+                record = next((r for r in records
+                               if isinstance(r, dict) and r.get("segment_id") == selected_id), None)
                 if not record:
-                    raise ValueError("未找到所选视频卡片。")
+                    if not records and not selection.get("previously_loaded"):
+                        notices.append({"node_id": node_id, "message": "尚未选择视频，当前素材库没有可用卡片。"})
+                        continue
+                    raise ValueError(f"所选视频卡片（编号 {selected_id}）已不可用，请重新选择。")
                 directory = _inside(project_path, "files" if uploads else record.get("dir", record.get("tag", "")))
                 filename = record.get("storage_name" if uploads else "mp4")
                 video = _inside(directory, filename) if filename else None
@@ -163,4 +177,4 @@ def read_assets(selectors, roots):
             errors.append({"node_id": asset["node_id"], "message": "同一来源包含重复路径，请手动确认正式编号。"})
         else:
             seen[asset["id"]] = asset
-    return {"assets": list(seen.values()), "errors": errors}
+    return {"assets": list(seen.values()), "errors": errors, "notices": notices}
