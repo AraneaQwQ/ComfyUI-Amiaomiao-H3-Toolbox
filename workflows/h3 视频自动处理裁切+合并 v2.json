@@ -1,0 +1,552 @@
+{
+  "id": "2c921089-2512-42a9-b1c1-bce7ae2b551d",
+  "revision": 0,
+  "last_node_id": 33,
+  "last_link_id": 44,
+  "nodes": [
+    {
+      "id": 11,
+      "type": "DownloadAndLoadDepthAnythingV2Model",
+      "pos": [
+        -8100,
+        4820
+      ],
+      "size": [
+        390,
+        90
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "da_v2_model",
+          "type": "DAMODEL",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-depthanythingv2",
+        "ver": "553187872eeb1d52e50dc53209fa57e569609a72",
+        "Node name for S&R": "DownloadAndLoadDepthAnythingV2Model",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "depth_anything_v2_vitl_fp16.safetensors",
+        "auto"
+      ],
+      "widgets_values_named": {
+        "model": "depth_anything_v2_vitl_fp16.safetensors",
+        "precision": "auto"
+      }
+    },
+    {
+      "id": 13,
+      "type": "DepthAnything_V2",
+      "pos": [
+        -7660,
+        4820
+      ],
+      "size": [
+        170,
+        50
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "da_model",
+          "type": "DAMODEL",
+          "link": 10
+        },
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            38,
+            41
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-depthanythingv2",
+        "ver": "553187872eeb1d52e50dc53209fa57e569609a72",
+        "Node name for S&R": "DepthAnything_V2",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        -8480,
+        5010
+      ],
+      "size": [
+        350,
+        911
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            20
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            39,
+            42
+          ]
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "4d907bee61e92c2e65af3bd6383a4e4d356126d1",
+        "Node name for S&R": "VHS_LoadVideo",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": {
+        "video": "",
+        "force_rate": 24,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "choose video to upload": "image"
+      },
+      "widgets_values_named": {
+        "video": "",
+        "force_rate": 24,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "choose video to upload": "image"
+      }
+    },
+    {
+      "id": 22,
+      "type": "AmiaomiaoH3_MiniMaxClipBinLongBuilder",
+      "pos": [
+        -6850,
+        5010
+      ],
+      "size": [
+        810,
+        2066
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "AraneaQwQ/ComfyUI-Amiaomiao-H3-Toolbox",
+        "Node name for S&R": "AmiaomiaoH3_MiniMaxClipBinLongBuilder",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "H3_Video_Example",
+        "优先二采（无则退回一采）",
+        "auto（参数一致无损直拷，否则重编码）",
+        "",
+        "",
+        24,
+        "",
+        "0.5x",
+        1
+      ],
+      "widgets_values_named": {
+        "project_name": "H3_Video_Example",
+        "variant_policy": "优先二采（无则退回一采）",
+        "join_mode": "auto（参数一致无损直拷，否则重编码）",
+        "exclude_clips": "",
+        "clip_order": "",
+        "fps": 24,
+        "output_name": "",
+        "playback_speed": "0.5x",
+        "playback_speed_custom": 1
+      }
+    },
+    {
+      "id": 31,
+      "type": "AmiaomiaoH3_H3 Long Video Manager",
+      "pos": [
+        -8100,
+        5010
+      ],
+      "size": [
+        600,
+        1130
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "IMAGE",
+          "link": 38
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 39
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "total_segments",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "aux_id": "AraneaQwQ/ComfyUI-Amiaomiao-H3-Toolbox",
+        "Node name for S&R": "AmiaomiaoH3_H3 Long Video Manager",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        24,
+        10,
+        "22",
+        1,
+        "custom",
+        25,
+        true,
+        "H3_Video_Example",
+        true,
+        true,
+        "down",
+        false,
+        0,
+        "int8",
+        0.2
+      ],
+      "widgets_values_named": {
+        "fps": 24,
+        "segment_duration": 10,
+        "motion_context_frames": "22",
+        "segment_id": 1,
+        "playback_speed": "custom",
+        "scale_percent": 25,
+        "align_to_h3_grid": true,
+        "project_name": "H3_Video_Example",
+        "save_enabled": true,
+        "save_preview_mp4": true,
+        "final_align": "down",
+        "person_crop": false,
+        "person_crop_expand_percent": 0,
+        "save_dtype": "int8",
+        "playback_speed_custom": 0.2
+      }
+    },
+    {
+      "id": 32,
+      "type": "AmiaomiaoH3_H3 Smart Split",
+      "pos": [
+        -7470,
+        5010
+      ],
+      "size": [
+        590,
+        1140
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "IMAGE",
+          "link": 41
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 42
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "total_segments",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "aux_id": "AraneaQwQ/ComfyUI-Amiaomiao-H3-Toolbox",
+        "Node name for S&R": "AmiaomiaoH3_H3 Smart Split",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        24,
+        "medium",
+        "0",
+        1,
+        "1.0x",
+        100,
+        "H3_LVM",
+        "H3_Video_Example",
+        false,
+        "int8",
+        1
+      ],
+      "widgets_values_named": {
+        "fps": 24,
+        "detection_sensitivity": "medium",
+        "motion_context_frames": "0",
+        "segment_id": 1,
+        "playback_speed": "1.0x",
+        "scale_percent": 100,
+        "project_name": "H3_Video_Example",
+        "save_enabled": true,
+        "save_preview_mp4": false,
+        "save_dtype": "int8",
+        "playback_speed_custom": 1
+      }
+    }
+  ],
+  "links": [
+    [
+      10,
+      11,
+      0,
+      13,
+      0,
+      "DAMODEL"
+    ],
+    [
+      20,
+      19,
+      0,
+      13,
+      1,
+      "IMAGE"
+    ],
+    [
+      38,
+      13,
+      0,
+      31,
+      0,
+      "IMAGE"
+    ],
+    [
+      39,
+      19,
+      2,
+      31,
+      1,
+      "AUDIO"
+    ],
+    [
+      41,
+      13,
+      0,
+      32,
+      0,
+      "IMAGE"
+    ],
+    [
+      42,
+      19,
+      2,
+      32,
+      1,
+      "AUDIO"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "视频处理（均分）",
+      "bounding": [
+        -8110,
+        4940,
+        620,
+        1210
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "开启depth",
+      "bounding": [
+        -8110,
+        4760,
+        630,
+        170
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "视频合成",
+      "bounding": [
+        -6860,
+        4940,
+        840,
+        1550
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "视频处理（自动检测分镜）",
+      "bounding": [
+        -7480,
+        4940,
+        610,
+        1210
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 6,
+      "title": "输入视频",
+      "bounding": [
+        -8490,
+        4940,
+        370,
+        589.7186081694399
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ue_links": [],
+    "ds": {
+      "scale": 1.0640561539352906,
+      "offset": [
+        8865.487231121562,
+        -4688.610174018559
+      ]
+    },
+    "links_added_by_ue": [],
+    "frontendVersion": "1.57.4",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "extensions": {
+    "seed_widgets": {}
+  },
+  "version": 0.4,
+  "seed_widgets": {}
+}

@@ -30,6 +30,8 @@ python -m pip install -r ComfyUI-Amiaomiao-H3-Toolbox/requirements.txt
 
 示例工作流见 [`workflows/`](workflows/)。
 
+「h3 视频自动处理裁切+合并 v2」演示视频均分、按场景切分和从 Clip Bin 项目合并片段。需要 VideoHelperSuite 和 Depth Anything V2 节点包。导入后请在 `VHS_LoadVideo` 选择自己的视频；合并节点独立读取已有 Clip Bin 项目，请选择已归档片段的项目。
+
 ## 锁卡
 
 每张 shot 可以单独锁定或解锁；锁定后仍可选作接续源。点击“批量锁定”显示勾选框，可勾选多张或全选后批量操作；退出模式会清空勾选。普通和 Dual Picker 分别显示各自类型，项目删除前需要解锁两类中的所有锁卡。锁定状态保存在项目目录内的 `.card_locks.json`。
