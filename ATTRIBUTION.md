@@ -39,6 +39,26 @@ The Dual Saver/Picker pair (`clipbin/dual_nodes.py`, `clipbin/dual_manager.py`)
 is **original work of the ClipStream author** (AraneaQwQ), not taken from
 either upstream.
 
+## 3. Legacy widget-width compatibility
+* Problem reference: [Comfy-Org/ComfyUI_frontend#12443](https://github.com/Comfy-Org/ComfyUI_frontend/issues/12443)
+* Prior workaround: [pekkAi-dev/ComfyUI-LegacyWidgetWidthFix](https://github.com/pekkAi-dev/ComfyUI-LegacyWidgetWidthFix)
+* Toolbox files: `web/refs/legacy_widget_width.js`, `web/refs/legacy_widget_width_core.js`
+
+The local standalone repository has no license file. Its code is not copied
+verbatim here. Toolbox uses an independently written, host-activated
+implementation that shares the marker names `__lwwf_width` and
+`__lwwf_guarded`, so it can coexist with that workaround.
+
+## 3. Two-pass helpers (`refs/two_pass.py`)
+* **H3 Sigma Refiner** - from ComfyUI-YCNodes-MiniMax-H3 (`py/h3_sigma_refiner.py`),
+  author 亦诚 (yc), license **MIT** ("Copyright (c) 2026 yc"). `refine_sigmas` keeps the
+  algorithm unchanged; it is used by the "H3 两采 Sigma" node.
+* **Two-Pass Latent Reconcile** - from [T8mars/comfyui-minimax-h3-audio-T8](https://github.com/T8mars/comfyui-minimax-h3-audio-T8)
+  (`h3_t8/learned_latent_upscale_advanced.py`: `reconcile_two_pass_h3_latent` and its helpers),
+  copyright (C) 2026 MiniMax H3 Audio T8 contributors, license **GPL-3.0-or-later**. Behaviour is
+  unchanged; error messages were translated to Chinese. Used by the "H3 二采准备" node.
+* `tools/test_two_pass.py` checks both ports against the installed originals (identical outputs).
+
 ---
 
 MIT code may be incorporated into a GPLv3 work, so the whole plugin is

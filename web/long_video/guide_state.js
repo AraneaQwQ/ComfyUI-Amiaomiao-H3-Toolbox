@@ -343,6 +343,8 @@ export function parseDocument(raw) {
     view.zoom = Number(view.zoom) || 1;
     view.scroll = Number(view.scroll) || 0;
     view.strip_open = view.strip_open === true;
+    view.strip_density = ["large", "medium"].includes(view.strip_density) ? view.strip_density : null;
+    view.editor_preview_open = view.editor_preview_open === true;
     view.lane_heights = laneHeights(view);
     view.strip_marker_side = hasStripMarkerSide(view) ? stripMarkerSide(view) : null;
 
@@ -411,6 +413,8 @@ export function serializeDocument(doc) {
         };
         if (heightsChanged) document.view_state.lane_heights = heights;
         if (markerSideSet) document.view_state.strip_marker_side = stripMarkerSide(view);
+        if (view.strip_density) document.view_state.strip_density = view.strip_density;
+        if (view.editor_preview_open) document.view_state.editor_preview_open = true;
     }
     return JSON.stringify(document);
 }

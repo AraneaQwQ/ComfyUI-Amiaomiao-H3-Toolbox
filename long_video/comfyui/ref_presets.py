@@ -24,6 +24,7 @@ does not disappear.
 from __future__ import annotations
 
 import filecmp
+import hashlib
 import json
 import logging
 import os
@@ -150,7 +151,7 @@ def _empty(name: str) -> Dict[str, Any]:
 def _read_list(kind: str, raw: Any) -> List[Dict[str, Any]]:
     """Re-parse a stored list: media folders may have moved since it was written."""
     try:
-        return parse_media_list(raw, KIND_LIMITS[kind])
+        return parse_media_list(raw, KIND_LIMITS[kind], preserve_annotations=True)
     except ValueError:
         return []
 
@@ -220,7 +221,36 @@ def _write_preset(kind: str, name: str, entries: List[Dict[str, Any]]) -> None:
             os.remove(temp)
 
 
-def save_references(kind: Any, project: Any, entries: Any) -> Dict[str, Any]:
+class ReferenceProjectConflict(ValueError):
+    pass
+
+
+_UNCONDITIONAL = object()
+
+
+def read_reference_project(kind: Any, project: Any) -> Dict[str, Any]:
+    """Return a versioned snapshot; an empty project still has a revision."""
+    kind = check_kind(kind)
+    name = sanitize_project_name(project)
+    with _library_lock(kind, name):
+        try:
+            with open(preset_path(kind, name), "rb") as stream:
+                payload = stream.read()
+        except FileNotFoundError:
+            return {**_empty(name), "revision": None}
+        except OSError as exc:
+            raise ValueError(f"无法读取参考项目「{name}」。") from exc
+        try:
+            raw = json.loads(payload)
+            if not isinstance(raw, dict) or not isinstance(raw.get(LIST_KEY), list):
+                raise ValueError("Invalid project payload")
+            entries = parse_media_list(raw[LIST_KEY], KIND_LIMITS[kind], preserve_annotations=True)
+        except ValueError as exc:
+            raise ValueError(f"参考项目「{name}」的存档无法读取。") from exc
+        return {"project_name": name, LIST_KEY: entries, "revision": hashlib.sha256(payload).hexdigest()}
+
+
+def save_references(kind: Any, project: Any, entries: Any, expected_revision=_UNCONDITIONAL) -> Dict[str, Any]:
     """Replace one project's preset with the cards currently in the panel.
 
     Paths only, never the media. The list is validated by the node's own parser, so the
@@ -230,18 +260,34 @@ def save_references(kind: Any, project: Any, entries: Any) -> Dict[str, Any]:
     kind = check_kind(kind)
     name = sanitize_project_name(project)
     try:
-        cleaned = parse_media_list(entries, KIND_LIMITS[kind])
+        cleaned = parse_media_list(entries, KIND_LIMITS[kind], preserve_annotations=True)
     except ValueError as exc:
         raise ValueError("预设内容无法保存：%s" % exc) from None
 
     with _library_lock(kind, name):
+        if expected_revision is not _UNCONDITIONAL:
+            if read_reference_project(kind, name)["revision"] != expected_revision:
+                raise ReferenceProjectConflict(f"项目「{name}」已在别处更新，未覆盖。请先保留你的改动，再刷新。")
+        else:
+            # The older loaders do not send annotations. Keep them for files they retain.
+            def key(entry):
+                return entry["type"], entry["subfolder"], entry["filename"]
+
+            old = {key(entry): entry for entry in load_references(kind, name)[LIST_KEY]}
+            for entry in cleaned:
+                for field in ("card_id", "purpose", "note"):
+                    value = old.get(key(entry), {}).get(field)
+                    if value:
+                        entry.setdefault(field, value)
         _write_preset(kind, name, cleaned)
+        revision = read_reference_project(kind, name)["revision"]
 
     logger.info("[H3 Ref Libraries] Saved the %s preset for '%s' (%d entries)", kind, name, len(cleaned))
     return {
         "name": name,
         "kind": kind,
         "saved": len(cleaned),
+        "revision": revision,
         "cover_url": _reference_cover_url(kind, name, cleaned),
         "updated_at": _preset_updated_at(kind, name),
     }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 
 import torch
 from comfy_api.latest import io
@@ -111,6 +112,7 @@ def _run_batches(
     saved_ids = []
     total = 0
     processed_frames = 0
+    previews = 0
     for meta, frames in batches:
         total += 1
         processed_frames = max(processed_frames, int(meta["main_end"]))
@@ -131,7 +133,7 @@ def _run_batches(
             if smart:
                 extra.update({"segmentation_method": "smart", "scene_id": meta["scene_id"]})
             try:
-                save_segment(
+                saved = save_segment(
                     project=project,
                     seg_index_1based=number,
                     video=video,
@@ -142,6 +144,8 @@ def _run_batches(
                     thumbnail_frame=meta["context_frames"] if smart else 0,
                     meta=extra,
                 )
+                if save_preview_mp4 and segment_id is None and saved["has_mp4"]:
+                    previews += 1
                 saved_ids.append(number)
             except Exception as exc:
                 raise RuntimeError(
@@ -152,7 +156,7 @@ def _run_batches(
             selected = (video, audio)
     if total == 0:
         raise ValueError("H3 v2：输入视频没有可解码的画面。")
-    if selected is None:
+    if segment_id is not None and selected is None:
         raise ValueError(f"segment_id={segment_id} 超出范围 [1, {total}]。")
     if save_enabled:
         source_frames = int((playback_stats or {}).get("source_frames") or
@@ -172,6 +176,8 @@ def _run_batches(
         _notify(project, saved_ids)
         print(f"[H3 v2] saved {total} streaming segments -> '{project}' "
               f"({normalize_save_dtype(save_dtype)})")
+    if segment_id is None:
+        return io.NodeOutput(ui={"segments": total, "previews": previews})
     video, audio = selected
     result = video.to(torch.float32).div(255.0)
     return io.NodeOutput(result, audio, int(result.shape[0]), total)
@@ -340,6 +346,66 @@ class H3SmartSplitV2(_V2Schema, io.ComfyNode):
                             playback=playback, playback_stats=playback_stats)
 
 
-NODE_LIST = [H3LongVideoManagerV2, H3SmartSplitV2]
+class H3VideoCutterV3(_V2Schema, io.ComfyNode):
+    @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        return float("nan")
 
-__all__ = ["H3LongVideoManagerV2", "H3SmartSplitV2", "NODE_LIST"]
+    @classmethod
+    def define_schema(cls):
+        fixed = H3LongVideoManagerV2.define_schema()
+        smart = H3SmartSplitV2.define_schema()
+        return io.Schema(
+            node_id="H3VideoCutterV3",
+            display_name="H3 视频裁切 V3",
+            category="H3/Video",
+            description="定长裁切或智能分镜，直接将全部片段保存到裁切项目库。",
+            is_output_node=True,
+            inputs=[
+                io.Combo.Input("split_mode", options=["fixed", "smart"], default="fixed"),
+                # Keep the old widget positions, including the now-ignored output segment/save switch.
+                *[io.Boolean.Input("save_preview_mp4", optional=True, default=True)
+                  if field.id == "save_preview_mp4" else field
+                  for field in fixed.inputs if field.id != "motion_context_frames"],
+                next(field for field in smart.inputs if field.id == "detection_sensitivity"),
+                io.Combo.Input("motion_context_frames", options=["auto", "0", "5", "22", "39", "56"],
+                               default="auto"),
+            ],
+            outputs=[],
+        )
+
+    @classmethod
+    def execute(cls, video, custom_path, split_mode="fixed", segment_duration=6.0,
+                detection_sensitivity="medium", align_to_h3_grid=True,
+                motion_context_frames="auto", segment_id=1, save_enabled=True,
+                save_preview_mp4=True, **settings):
+        if split_mode not in ("fixed", "smart"):
+            raise ValueError("未知的 H3 视频裁切模式。")
+        smart = split_mode == "smart"
+        context = ("0" if smart else "22") if motion_context_frames == "auto" else motion_context_frames
+        has_encoder = bool(save_preview_mp4 and shutil.which("ffmpeg"))
+        common = dict(video=video, custom_path=custom_path, motion_context_frames=context,
+                      segment_id=None, save_enabled=True, save_preview_mp4=has_encoder, **settings)
+        if smart:
+            result = H3SmartSplitV2.execute(detection_sensitivity=detection_sensitivity, **common)
+        else:
+            result = H3LongVideoManagerV2.execute(
+                segment_duration=segment_duration, align_to_h3_grid=align_to_h3_grid, **common)
+        stats = result.ui
+        warning = ""
+        if save_preview_mp4:
+            if not has_encoder:
+                warning = ("未生成 MP4 预览：找不到 ffmpeg。请在运行 ComfyUI 的电脑安装包含 ffmpeg 和 ffprobe 的 "
+                           "FFmpeg，将其 bin 目录加入 PATH；在新终端确认 ffmpeg -version 和 ffprobe -version "
+                           "均可运行后，完整重启 ComfyUI 并重新裁切。")
+            elif stats["previews"] < stats["segments"]:
+                warning = f"有 {stats['segments'] - stats['previews']} 段未生成 MP4 预览，请检查 ComfyUI 后端的编码日志。"
+        return io.NodeOutput(ui={
+            "h3v3_cut": [{**stats, "project": settings.get("project_name") or DEFAULT_PROJECT,
+                          "warning": warning}],
+        })
+
+
+NODE_LIST = [H3LongVideoManagerV2, H3SmartSplitV2, H3VideoCutterV3]
+
+__all__ = ["H3LongVideoManagerV2", "H3SmartSplitV2", "H3VideoCutterV3", "NODE_LIST"]

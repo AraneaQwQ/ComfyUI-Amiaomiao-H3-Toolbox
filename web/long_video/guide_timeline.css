@@ -260,7 +260,7 @@ overflow-x: hidden;
 }
 
 .amiao-h3guide-playhead.cap::before {
-    content: "定位";
+    content: attr(data-frame);
     position: absolute;
     left: 4px;
     top: 0;
@@ -822,6 +822,61 @@ overflow-x: hidden;
 .amiao-h3guide-strip .amiao-h3guide-clip:hover,
 .amiao-h3guide-strip .amiao-h3guide-marker.selected,
 .amiao-h3guide-strip .amiao-h3guide-clip.selected { z-index: 6; }
+
+.ahg-node > .ahr-header { padding: 6px 10px; flex-wrap: wrap; }
+.ahr .ahg-node-body { display: flex; flex-direction: column; padding: 4px 8px 8px; overflow: hidden; }
+.ahg-summary { display: flex; flex: none; flex-wrap: wrap; gap: 4px; padding: 2px 0; }
+.ahg-chip {
+    padding: 2px 6px; border: 1px solid var(--ahr-line); border-radius: 4px;
+    color: var(--ahr-muted); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.ahg-chip.is-image { color: var(--ahr-image); }
+.ahg-chip.is-audio, .ahg-chip.pending { color: var(--ahr-audio); }
+.ahg-chip.ok { color: var(--ahr-accent); }
+.ahg-chip.error { color: var(--ahr-danger); }
+.ahg-node .amiao-h3guide-strip { flex: 1 1 0; margin-top: 4px; padding: 5px 6px 2px; }
+.ahg-node .amiao-h3guide-strip-head { margin-bottom: 4px; }
+.ahg-node .ahr-icon-btn[aria-pressed="true"] { color: var(--ahr-accent); border-color: var(--ahr-accent); }
+.ahg-quick-release {
+    display: inline-flex; align-items: center; gap: 6px; margin-left: auto;
+    padding-inline: 5px; color: var(--ahr-muted); font-size: 11px;
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.ahg-quick-release-value { min-width: 72px; }
+.ahg-quick-release-range { width: 76px; margin: 0; accent-color: var(--ahr-accent); cursor: pointer; }
+.ahg-quick-release-range:disabled { cursor: not-allowed; }
+.ahg-node .amiao-h3guide-strip-row { margin-bottom: 4px; }
+.ahg-node .amiao-h3guide-strip-row:last-child { margin-bottom: 0; }
+.ahr .amiao-h3guide-strip {
+    --h3g-panel: var(--ahr-bg); --h3g-lane: var(--ahr-input); --h3g-card: var(--ahr-raised);
+    --h3g-line: var(--ahr-line); --h3g-edge: var(--ahr-line-strong);
+    --h3g-accent: var(--ahr-accent); --h3g-dim: var(--ahr-text); --h3g-text: var(--ahr-text);
+    --h3g-muted: var(--ahr-muted); --h3g-hint: var(--ahr-muted);
+    --h3g-clip: #32291e; --h3g-clip-edge: var(--ahr-audio);
+}
+.ahr .amiao-h3guide-playhead { border-color: var(--ahr-accent); }
+.ahr .amiao-h3guide-playhead.cap::before {
+    color: var(--ahr-accent); background: var(--ahr-input); padding: 0 3px;
+    right: 3px; left: auto;
+}
+.ahr .amiao-h3guide-marker { border-color: color-mix(in srgb, var(--ahr-image) 55%, var(--ahr-line)); }
+.ahr .amiao-h3guide-marker.selected, .ahr .amiao-h3guide-clip.selected {
+    border-color: var(--ahr-accent); background: var(--ahr-panel); outline: 1px solid var(--ahr-accent); box-shadow: none;
+}
+.ahr .amiao-h3guide-marker.invalid, .ahr .amiao-h3guide-clip.invalid,
+.ahr .amiao-h3guide-card.ahg-invalid { border-color: var(--ahr-danger); }
+.ahr .ahg-inactive { border-style: dashed; opacity: .72; }
+.ahr .ahg-inactive img { filter: grayscale(1); }
+.ahg-lane-status {
+    position: absolute; top: 2px; right: 2px; z-index: 1; max-width: calc(100% - 4px);
+    color: var(--ahr-text); background: var(--ahr-bg); border-radius: 3px; padding: 0 3px;
+    font-size: 10px; white-space: nowrap; overflow: hidden;
+}
+.invalid > .ahg-lane-status { color: var(--ahr-danger); }
+.ahr .amiao-h3guide-clip { min-width: 0; padding-inline: 0; }
+.ahr .amiao-h3guide-clip.amiao-h3guide-wave-none { min-width: 14px; }
+.ahr .amiao-h3guide-clip-cap { padding-inline: 3px; line-height: 12px; }
+.ahr .ahg-clip-time { color: var(--ahr-muted); font-variant-numeric: tabular-nums; }
 
 /* --- The audio card says what it actually has ---
    A waveform is only drawn from real peaks, so the state has to be readable as text instead

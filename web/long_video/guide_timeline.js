@@ -23,7 +23,7 @@
 // frame_index stays the authority and seconds are only an input and a label; audio
 // trim stays in sample points. Nothing here re-derives those rules.
 
-import { localPointerX, sidebarWidthsFor, laneSpaceBonus, createGuideHistory, referencePosition, releaseFromPosition, referenceDescription } from "./guide_editor_state.js";
+import { localPointerX, sidebarWidthsFor, laneSpaceBonus, createGuideHistory, referencePosition, releaseFromPosition, referenceDescription, stripLayout, summaryStatus } from "./guide_editor_state.js";
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { addPanel } from "./dom_panel.js";
@@ -38,11 +38,11 @@ import {
     declutterMarkers, duplicateGuide, formatSeconds, frameFromLanePointer, frameToSeconds, guideFramesFor, mediaKind, mediaKeyOf,
     moveGuide, nextFreeFrame, panBy, panWindow, parseDocument, patchGuide, pendingAudioCount, ensureLabels, removeGuide,
     scrollForPanThumb, scrollForPointerPan, scrollToFrame, secondsToFrame,
-    squareMarkerPlan, stripCardPlan, stripLaneHeights, stripMarkerPlan, stripRoom, DEFAULT_LANE_HEIGHTS,
-    hasStripMarkerSide, stepStripMarkerSide, stripMarkerSide,
+    squareMarkerPlan, stripCardPlan, stripMarkerPlan,
+    hasStripMarkerSide, stripMarkerSide,
     STRENGTH_MAX, STRENGTH_MIN, STRENGTH_STEP, isMutedImage, normalizeStrength, strengthOf,
     MARKER_INSET, MARKER_SIDE_HARD_MAX, clampLaneHeight, laneHeights, stepLaneHeight,
-    serializeDocument, summaryOf, tickMarks, trimFromSeconds, trimWindow, validateGuides, validateGuidesV2, validationState, zoomStepAt,
+    serializeDocument, tickMarks, trimFromSeconds, trimWindow, validateGuides, validateGuidesV2, validationState, zoomStepAt,
     DRAG_START_PX, passedDragThreshold, resolveDropTarget, resolveTimelineRange,
 } from "./guide_state.js";
 
@@ -50,6 +50,7 @@ try {
     // The deck/card styling is the picker's; only the timeline and the editor shell
     // are new. Loading the picker sheet is what makes the two panels one family.
     const sheets = [
+        ["amiaomiao-h3-refs-style", "../refs/refs.css"],
         ["amiaomiao-amiao-h3lvm-styles", "./h3lvm_picker.css"],
         ["amiaomiao-amiao-h3guide-styles", "./guide_timeline.css"],
         ["amiaomiao-amiao-h3guide-workbench-styles", "./guide_workbench.css"],
@@ -78,6 +79,7 @@ const GUIDES_FIELD = "guides";
 // A constant, not a measured value: pressing 刷新 or 打开编辑器 must not resize the
 // node, and a self-sizing panel is how that bug starts.
 const NODE_PANEL_H = 112;
+const NEW_NODE_H = 475;
 const SCROLL_EDGE = 28;
 const PAN_THUMB_MIN_PX = 28;
 const MAX_DECODE_BYTES = 40 * 1024 * 1024;
@@ -126,6 +128,14 @@ app.registerExtension({
         };
 
         const originalExecuted = nodeType.prototype.onExecuted;
+        const originalConnections = nodeType.prototype.onConnectionsChange;
+        nodeType.prototype.onConnectionsChange = function (side, slot) {
+            const result = originalConnections?.apply(this, arguments);
+            if (side === 1 && ["latent", "length_seconds"].includes(this.inputs?.[slot]?.name)) {
+                this._h3guideDurationChanged?.();
+            }
+            return result;
+        };
         nodeType.prototype.onExecuted = function (message) {
             const r = originalExecuted ? originalExecuted.apply(this, arguments) : undefined;
             // execution.py sends the node's ui dict as the executed message's output, so
@@ -189,6 +199,13 @@ function installGuideNode(node) {
     let parseError = null;
 
     let doc = readDoc();
+    const widget = documentWidget();
+    if (!parseError && widget && !doc.guides.length && widget.value === DEFAULT_DOCUMENT) {
+        // configure() restores saved widgets and the original size when loading a graph.
+        doc.view_state.strip_open = true;
+        widget.value = serializeDocument(doc);
+        if (node.size) node.setSize?.([Math.max(420, node.size[0]), Math.max(NEW_NODE_H, node.size[1])]);
+    }
     const editHistory = createGuideHistory(doc);
     let restoringHistory = false;
     let strengthExpanded = false;
@@ -205,43 +222,37 @@ function installGuideNode(node) {
         return element;
     }
 
+    function tool(glyph, label, extra = "") {
+        const button = make("button", `ahr-icon-btn ${extra}`);
+        button.type = "button";
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        const icon = make("i", `pi pi-${glyph}`);
+        icon.setAttribute("aria-hidden", "true");
+        button.append(icon);
+        return button;
+    }
+
     // ---------- the node body: a summary strip and one button ----------
     const container = document.createElement("div");
-    container.className = "amiao-h3lvm-container";
+    container.className = "ahr ahg-node";
 
     const toolbar = document.createElement("div");
-    toolbar.className = "amiao-h3lvm-toolbar";
+    toolbar.className = "ahr-header";
 
-    const openBtn = document.createElement("button");
-    openBtn.className = "amiao-h3lvm-refresh-btn amiao-h3lvm-primary";
-    openBtn.textContent = "🎬 打开 Guide 编辑器";
-    openBtn.title = "在时间轴上排列图片与音频 Guide；关闭编辑器不会清空数据，也不影响执行";
-
-    const refreshBtn = document.createElement("button");
-    refreshBtn.className = "amiao-h3lvm-refresh-btn";
-    refreshBtn.textContent = "🔄 刷新";
-    refreshBtn.title = "重新读取列表、素材信息与视频总帧数";
-
-    // The timeline inside the node is an optional helper view, not the main editor. It is
-    // closed by default and only this button opens it, so the default node stays compact and
-    // nothing about loading media can change the node size.
-    const stripBtn = make("button", "amiao-h3lvm-refresh-btn");
-    stripBtn.textContent = "📈 显示节点时间轴";
-    stripBtn.title = "节点内的时间轴只是辅助视图；缩放、卡片池与详情在 Guide 编辑器里";
-
-    const statusText = document.createElement("span");
-    statusText.className = "amiao-h3lvm-status";
-
-    toolbar.append(openBtn, stripBtn, refreshBtn, statusText);
-
-    const nodeFooter = document.createElement("div");
-    nodeFooter.className = "amiao-h3lvm-footer";
-    for (const line of [
-        "连接 positive / latent / 视频 VAE / 音频 VAE；只有图片 Guide 时可以不连音频 VAE，反之亦然。",
-        "没有任何启用且已放置的 Guide 时，positive 原样透传。",
-    ]) {
-        nodeFooter.appendChild(make("span", "amiao-h3lvm-hint", line));
-    }
+    const title = make("strong", "ahr-title");
+    title.append(make("i", "pi pi-sliders-h"), make("span", "", "H3 Guide 时间轴"));
+    const actions = make("div", "ahr-actions");
+    const openBtn = make("button", "ahr-btn", "详细设置");
+    openBtn.type = "button";
+    openBtn.title = "打开 Guide 时间轴编辑器";
+    openBtn.setAttribute("aria-expanded", "false");
+    const refreshBtn = tool("refresh", "刷新素材信息");
+    const stripBtn = tool("eye", "显示节点时间轴");
+    actions.append(openBtn, stripBtn, refreshBtn);
+    toolbar.append(title, actions);
+    const nodeFooter = make("div", "ahg-summary");
+    const body = make("div", "ahr-body ahg-node-body");
 
     // ---------- the timeline inside the node ----------
     // addPanel hands this panel every pixel the user drags the node taller, so the
@@ -254,52 +265,29 @@ function installGuideNode(node) {
     let stripFrame = 0;
     // What the strip is drawing right now, which is not always what the document asked for:
     // the panel owns its height, so stripLaneHeights may clamp the two lanes.
-    let stripHeights = { ...DEFAULT_LANE_HEIGHTS };
 
     const strip = make("div", "amiao-h3guide-strip amiao-h3guide-strip-off");
     const stripHead = make("div", "amiao-h3guide-strip-head");
-    const stripLaneSize = (label) => {
-        const shrink = make("button", "amiao-h3guide-secondary", label + " −");
-        const grow = make("button", "amiao-h3guide-secondary", "＋");
-        const px = make("span", "amiao-h3guide-lane-count amiao-h3guide-lane-px");
-        shrink.title = "把节点内这条轨道变矮；独立设置的图片卡片尺寸不变";
-        return { shrink, grow, px };
-    };
-    const stripImageSize = stripLaneSize("图片轨");
-    const stripAudioSize = stripLaneSize("音频轨");
-    const stripCardSize = {
-        shrink: make("button", "amiao-h3guide-secondary", "卡片 −"),
-        grow: make("button", "amiao-h3guide-secondary", "＋"),
-        px: make("span", "amiao-h3guide-lane-count amiao-h3guide-lane-px amiao-h3guide-card-px"),
-    };
-    stripImageSize.grow.title = "只把节点内的图片轨道变高";
-    stripAudioSize.grow.title = "把这条轨道变高，波形更清楚";
-    const stripHint = make("span", "amiao-h3guide-strip-hint", "整段视频按宽度铺满 · 缩放与卡片池在「打开 Guide 编辑器」");
-    stripHead.append(
-        make("span", "amiao-h3guide-strip-title", "节点时间轴"),
-        stripCardSize.shrink, stripCardSize.px, stripCardSize.grow,
-        stripImageSize.shrink, stripImageSize.px, stripImageSize.grow,
-        stripAudioSize.shrink, stripAudioSize.px, stripAudioSize.grow,
-        stripHint,
-    );
-    const stripRelease = make("label", "amiao-h3guide-strip-release");
-    const stripReleaseRange = make("input", "amiao-h3guide-strip-release-range");
-    Object.assign(stripReleaseRange, { type: "range", min: "0", max: "100", step: "0.1", value: "100" });
-    stripReleaseRange.setAttribute("aria-label", "节点图片参考约束，影响全部时间轴图片");
-    stripReleaseRange.title = "0–100 为相对约束刻度，数值越大保留越久，100 全程保留；提前释放需连接 H3 Guide 关键帧阶段控制 MODEL 节点";
-    const stripReleaseText = make("span", "amiao-h3guide-strip-release-value");
-    stripRelease.append(make("strong", null, "图片参考约束"), make("span", null, "更早释放"), stripReleaseRange, make("span", null, "全程保留"), stripReleaseText);
-    stripHead.appendChild(stripRelease);
-    stripReleaseRange.addEventListener("input", () => {
-        const next = releaseFromPosition(stripReleaseRange.value, doc.keyframe_release);
-        stripReleaseText.textContent = referenceDescription(next);
-        stripReleaseRange.setAttribute("aria-valuetext", stripReleaseText.textContent);
-    }, { signal });
-    stripReleaseRange.addEventListener("change", () => {
-        if (parseError) { syncReleaseControls(); return; }
-        doc.keyframe_release = releaseFromPosition(stripReleaseRange.value, doc.keyframe_release);
-        writeDoc({ dirty: true }); syncReleaseControls();
-    }, { signal });
+    const density = make("div", "ahr-density");
+    const densityButtons = [["large", tool("stop", "大卡片", "is-seg")], ["medium", tool("th-large", "中卡片", "is-seg")]];
+    for (const [value, button] of densityButtons) {
+        button.onclick = () => {
+            doc.view_state.strip_density = value;
+            writeDoc({ dirty: false });
+            fitStrip();
+        };
+        density.append(button);
+    }
+    const stripHint = make("span", "amiao-h3guide-strip-hint", "拉高节点可显示时间轴");
+    const quickRelease = make("label", "ahg-quick-release");
+    const quickValue = make("span", "ahg-quick-release-value", "图片约束 100");
+    const quickRange = make("input", "ahg-quick-release-range");
+    Object.assign(quickRange, { type: "range", min: "0", max: "100", step: "0.1" });
+    quickRange.setAttribute("aria-label", "图片约束");
+    quickRange.addEventListener("input", () => paintQuickRelease(releaseFromPosition(quickRange.value)));
+    quickRange.addEventListener("change", () => commitRelease(quickRange.value));
+    quickRelease.append(quickValue, quickRange);
+    stripHead.append(density, stripHint);
     const stripBody = make("div", "amiao-h3guide-strip-body amiao-h3guide-strip-body-off");
     const stripRuler = make("div", "amiao-h3guide-ruler");
     const stripRulerRow = make("div", "amiao-h3guide-row amiao-h3guide-strip-row");
@@ -322,7 +310,8 @@ function installGuideNode(node) {
         tickGapPx: 64,
     });
 
-    container.append(toolbar, nodeFooter, strip);
+    body.append(nodeFooter, strip);
+    container.append(toolbar, body);
     addPanel(node, "h3guide_panel", container, NODE_PANEL_H);
 
 
@@ -385,11 +374,25 @@ function installGuideNode(node) {
     // length widget - that one really is frames, so it is read as-is. The alignment to 17n+5
     // is the native node's own (comfy_extras/nodes_minimax_h3.py: align_frame_count), so the
     // ruler the panel draws is the length the run will produce.
+    function linkedNode(target, name) {
+        const input = target?.inputs?.find(item => item.name === name);
+        const links = target?.graph?.links;
+        const link = input?.link != null ? (links?.get?.(input.link) ?? links?.[input.link]) : null;
+        return link ? target.graph.getNodeById?.(link.origin_id) : null;
+    }
+
+    function generationSettings() {
+        const direct = linkedNode(node, "length_seconds");
+        if (direct?.type === "AmiaomiaoH3_GenerationSettings") return direct;
+        if (direct || ownSecondsRaw() > 0) return null;
+        const generator = linkedNode(node, "latent");
+        const settings = generator?.type === "AmiaomiaoH3_ReferenceToVideo" ? linkedNode(generator, "settings") : null;
+        return settings?.type === "AmiaomiaoH3_GenerationSettings" ? settings : null;
+    }
+
     function upstreamLength() {
         try {
-            const input = node.inputs?.find((item) => item.name === "latent");
-            const link = input?.link != null ? node.graph?.links?.[input.link] : null;
-            const source = link ? node.graph?.getNodeById?.(link.origin_id) : null;
+            const source = linkedNode(node, "latent");
             if (!source) return null;
             const widget = source.widgets?.find((item) => item.name === "length");
             const raw = Number(widget?.value);
@@ -410,9 +413,7 @@ function installGuideNode(node) {
     // empty for a wired duration - follow one link, the same way upstreamLength() does. If the
     // source cannot be read, return 0: no ruler is better than a made-up one.
     function ownSecondsRaw() {
-        const input = node.inputs?.find((item) => item.name === "length_seconds");
-        const link = input?.link != null ? node.graph?.links?.[input.link] : null;
-        const source = link ? node.graph?.getNodeById?.(link.origin_id) : null;
+        const source = linkedNode(node, "length_seconds");
         if (source) {
             const widget = source.widgets?.find((item) => Number(item.value) > 0);
             const wired = Number(widget?.value);
@@ -425,12 +426,14 @@ function installGuideNode(node) {
     // frames 0 means "nothing to draw yet"; the panel says so instead of inventing a
     // ruler, because a made-up length is how a guide ends up out of range.
     function timelineRange() {
+        const settings = generationSettings();
+        const frames = settings?.h3GuideDurationFrames?.();
         return resolveTimelineRange({
-            resolvedFrameCount: doc.resolved_frame_count,
+            resolvedFrameCount: frames > 0 ? 0 : doc.resolved_frame_count,
             resolvedSource: doc.resolved_source,
-            ownSeconds: ownSecondsRaw(),
+            ownSeconds: settings ? 0 : ownSecondsRaw(),
             fps: doc.fps,
-            upstream: upstreamLength(),
+            upstream: settings ? { frames, label: "H3 生成设置" } : upstreamLength(),
         });
     }
 
@@ -470,6 +473,8 @@ function installGuideNode(node) {
 
     function currentProblems() {
         const range = timelineRange();
+        const counts = guideStatusCounts(doc.guides, perImageStrength);
+        if (!range.frames && !counts.images && !counts.audios) return [];
         // v2: a 0.00 card is not part of the run, so its placement is not a problem either.
         const check = perImageStrength ? validateGuidesV2 : validateGuides;
         return check(doc.guides, range.frames, {
@@ -548,12 +553,13 @@ function installGuideNode(node) {
         doc = readDoc();
         buildEditor();
         renderAll();
-        openBtn.classList.add("on");
-        openBtn.textContent = "🎬 Guide 编辑器已打开";
+        openBtn.setAttribute("aria-expanded", "true");
     }
 
     function closeEditor() {
         if (!root) return;
+        clearTimeout(noteTimer);
+        pendingReplaceId = null;
         for (const player of players) {
             player.onended = null;
             player.pause();
@@ -574,8 +580,8 @@ function installGuideNode(node) {
         els = null;
         editorSurface = null;
         cardEls.clear();
-        openBtn.classList.remove("on");
-        openBtn.textContent = "🎬 打开 Guide 编辑器";
+        openBtn.setAttribute("aria-expanded", "false");
+        if (openBtn.isConnected) openBtn.focus({ preventScroll: true });
     }
 
     // Workbench controls reuse the original document and media pipeline.
@@ -622,7 +628,7 @@ function installGuideNode(node) {
         }
     }
     function renderReferencePreview() {
-        if (!els?.preview) return;
+        if (!els?.preview || !doc.view_state.editor_preview_open) return;
         const guide = selectedGuide();
         const key = guide ? guide.id + ":" + mediaKeyOf(guide) : "";
         els.previewName.textContent = guide?.label || "未选择素材";
@@ -630,7 +636,7 @@ function installGuideNode(node) {
         els.preview.dataset.key = key;
         els.preview.replaceChildren();
         if (!guide) {
-            els.preview.append(make("div", "amiao-h3guide-preview-empty", "从左侧素材库或下方轨道选择一条素材"));
+            els.preview.append(make("div", "amiao-h3guide-preview-empty", "未选中素材"));
         } else if (guide.kind === IMAGE_KIND) {
             const image = make("img", "amiao-h3guide-preview-image");
             image.alt = guide.label || guide.asset.filename;
@@ -642,24 +648,35 @@ function installGuideNode(node) {
             els.preview.appendChild(image);
         } else {
             const name = make("div", "amiao-h3guide-preview-empty");
-            name.append(make("strong", null, "♫ 音频参考"), make("p", null, guide.asset.filename),
-                make("p", "amiao-h3guide-note", "在右侧试听与裁切音频；下方轨道显示实际占用范围。"));
+            name.append(make("strong", null, "参考音频"), make("p", null, guide.asset.filename));
             els.preview.appendChild(name);
         }
     }
+    function paintQuickRelease(config) {
+        quickValue.textContent = `图片约束 ${Number(referencePosition(config).toFixed(1))}`;
+        quickRange.setAttribute("aria-valuetext", referenceDescription(config));
+        quickRelease.title = referenceDescription(config);
+    }
+    function commitRelease(position) {
+        if (parseError) return;
+        doc.keyframe_release = releaseFromPosition(position, doc.keyframe_release);
+        writeDoc();
+    }
     function syncReleaseControls() {
         const config = doc.keyframe_release || { enabled: false, threshold: 0.9 };
-        stripReleaseRange.disabled = Boolean(parseError);
-        if (document.activeElement !== stripReleaseRange) stripReleaseRange.value = String(referencePosition(config));
-        stripReleaseText.textContent = referenceDescription(config);
-        stripReleaseRange.setAttribute("aria-valuetext", stripReleaseText.textContent);
+        if (document.activeElement !== quickRange) {
+            quickRange.value = String(referencePosition(config));
+            paintQuickRelease(config);
+        }
+        quickRange.disabled = Boolean(parseError);
         if (!els) return;
         els.releaseEnabled.checked = config.enabled;
         els.releaseThreshold.disabled = !config.enabled;
         if (document.activeElement !== els.releaseThreshold) els.releaseThreshold.value = String(config.threshold);
-        const slider = els.detail.querySelector(".amiao-h3guide-reference-range");
+        const slider = els.settings.querySelector(".amiao-h3guide-reference-range");
+        if (slider) slider.disabled = Boolean(parseError);
         if (slider && document.activeElement !== slider) slider.value = String(referencePosition(config));
-        const label = els.detail.querySelector(".amiao-h3guide-reference-value");
+        const label = els.settings.querySelector(".amiao-h3guide-reference-value");
         if (label) label.textContent = referenceDescription(config);
         if (slider) slider.setAttribute("aria-valuetext", referenceDescription(config));
     }
@@ -678,52 +695,44 @@ function installGuideNode(node) {
             value.textContent = referenceDescription(next);
             slider.setAttribute("aria-valuetext", value.textContent);
         });
-        slider.addEventListener("change", () => {
-            doc.keyframe_release = releaseFromPosition(slider.value, doc.keyframe_release || config);
-            writeDoc();
-            syncReleaseControls();
-        });
+        slider.addEventListener("change", () => commitRelease(slider.value));
         const ends = make("div", "amiao-h3guide-reference-ends");
         ends.append(make("span", null, "更早释放"), make("span", null, "全程保留"));
-        panel.append(title, value, slider, ends,
-            make("p", "amiao-h3guide-note", "0–100 是相对约束刻度，数值越大，图片条件保留越久；不是实际模型权重或采样步数百分比。"),
-            make("p", "amiao-h3guide-model-note", "提前释放需连接「H3 Guide 关键帧阶段控制」MODEL 节点。"));
+        slider.title = "相对约束刻度；提前释放需连接「H3 Guide 关键帧阶段控制」MODEL 节点";
+        panel.append(title, value, slider, ends);
         return panel;
     }
     function buildEditor() {
         scope = new AbortController();
         const signal = scope.signal;
-        root = make("div", "amiao-h3guide-root amiao-h3guide-workbench");
+        root = make("div", "ahr amiao-h3guide-root amiao-h3guide-workbench");
         root.setAttribute("role", "dialog");
         root.setAttribute("aria-label", "Guide 时间轴编辑器");
 
-        const head = make("div", "amiao-h3guide-bar");
+        const head = make("div", "amiao-h3guide-bar ahr-header");
         const headSub = make("span", "amiao-h3guide-sub");
-        const zoomOut = make("button", "amiao-h3guide-primary", "−");
-        zoomOut.title = "缩小时间轴";
-        const zoomIn = make("button", "amiao-h3guide-primary", "+");
-        zoomIn.title = "放大时间轴";
-        const fitBtn = make("button", "amiao-h3guide-primary", "全部");
-        fitBtn.title = "让整段视频刚好占满时间轴";
-        const closeBtn = make("button", "amiao-h3guide-primary", "✕ 关闭");
-        closeBtn.title = "关闭编辑器不会清空数据，也不会影响执行";
-        const undoBtn = make("button", "amiao-h3guide-secondary", "↶ 撤销");
-        const redoBtn = make("button", "amiao-h3guide-secondary", "↷ 重做");
-        undoBtn.setAttribute("aria-label", "撤销编辑");
-        redoBtn.setAttribute("aria-label", "重做编辑");
+        const feedback = make("div", "ahr-toast");
+        feedback.setAttribute("role", "status");
+        const zoomOut = tool("minus", "缩小时间轴");
+        const zoomIn = tool("plus", "放大时间轴");
+        const fitBtn = tool("arrows-h", "适应全长");
+        const closeBtn = tool("times", "关闭编辑器");
+        const undoBtn = tool("undo", "撤销编辑");
+        const redoBtn = tool("refresh", "重做编辑");
         undoBtn.onclick = () => restoreHistory("undo");
         redoBtn.onclick = () => restoreHistory("redo");
-        const focusBtn = make("button", "amiao-h3guide-secondary", "专注时间轴");
+        const focusBtn = tool("window-maximize", "专注时间轴");
         focusBtn.onclick = () => {
             const focus = root.classList.toggle("amiao-h3guide-focus");
-            focusBtn.textContent = focus ? "显示素材库" : "专注时间轴";
+            focusBtn.setAttribute("aria-pressed", String(focus));
+            focusBtn.title = focus ? "显示素材库" : "专注时间轴";
+            focusBtn.setAttribute("aria-label", focusBtn.title);
             scheduleMeasure();
         };
         head.append(make("strong", "amiao-h3guide-editor-title", "H3 · Guide 时间轴"),
             headSub, make("span", "amiao-h3guide-spacer"), undoBtn, redoBtn, focusBtn, closeBtn);
         const settings = make("section", "amiao-h3guide-settings");
-        settings.append(make("h3", null, "图片如何参与生成"),
-            make("p", "amiao-h3guide-note", "时间轴决定图片位于哪一帧；参考约束控制图片条件在采样中保留多久。"));
+        settings.append(buildReferenceControl());
 
 
         const releaseConfig = doc.keyframe_release || { enabled: false, threshold: 0.9 };
@@ -743,10 +752,11 @@ function installGuideNode(node) {
         releaseLabel.append(releaseEnabled, make("span", null, "图片仅前期生效"));
         const thresholdLabel = make("label", "amiao-h3guide-setting-threshold", "精确释放阈值 · Sigma");
         thresholdLabel.append(releaseThreshold);
-        settings.append(releaseLabel, thresholdLabel,
-            make("p", "amiao-h3guide-note", "噪声值低于阈值时释放图片条件。默认 0.9；它不是采样步数百分比。"),
-            make("p", "amiao-h3guide-model-note", "需将「H3 Guide 关键帧阶段控制」接入采样器 MODEL 链路。开关本身不会接线；音频与其他参考继续生效。"));
+        const advancedRelease = make("details", "amiao-h3guide-advanced-strength");
+        advancedRelease.append(make("summary", "", "高级释放设置"), releaseLabel, thresholdLabel);
+        settings.append(advancedRelease);
         const saveRelease = () => {
+            if (parseError) { syncReleaseControls(); return; }
             const threshold = Number(releaseThreshold.value);
             if (!releaseThreshold.value.trim() || !Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
                 releaseThreshold.value = String(doc.keyframe_release?.threshold ?? 0.9);
@@ -780,17 +790,19 @@ function installGuideNode(node) {
         // control as "＋ 添加图片".
         const laneHead = (title, addLabel, addTitle) => {
             const head = make("div", "amiao-h3guide-lane-head");
-            const tab = make("button", "amiao-h3guide-lane-tab", title);
+            const tab = make("button", "ahr-tab", title);
+            tab.setAttribute("role", "tab");
             tab.title = "卡片池切换到" + title;
-            const count = make("span", "amiao-h3guide-lane-count");
-            const add = make("button", "amiao-h3guide-secondary", addLabel);
+            const count = make("span", "ahr-tab-count");
+            tab.append(count);
+            const add = make("button", "ahr-add-tile is-wide", addLabel);
             add.title = addTitle;
             const px = make("span", "amiao-h3guide-lane-count amiao-h3guide-lane-px");
             const shrink = make("button", "amiao-h3guide-secondary", "− 高度");
             shrink.title = "把这条轨道变矮，卡片随之变小";
             const grow = make("button", "amiao-h3guide-secondary", "＋ 高度");
             grow.title = "把这条轨道变高，卡片随之变大（竖屏素材更清楚）";
-            head.append(tab, count, add, make("span", "amiao-h3guide-spacer"), px, shrink, grow);
+            head.append(make("span", "amiao-h3guide-spacer"), px, shrink, grow);
             return { head, tab, add, count, px, shrink, grow };
         };
         const imageLane = laneHead("图片卡片", "＋ 添加图片", "选择图片加入卡片池");
@@ -846,25 +858,21 @@ function installGuideNode(node) {
         search.placeholder = "搜索素材名称…";
         search.setAttribute("aria-label", "搜索素材");
         search.addEventListener("input", filterCards, { signal });
-        const libraryTabs = make("div", "amiao-h3guide-library-tabs");
-        const imageTab = make("div", "amiao-h3guide-library-tab");
-        const audioTab = make("div", "amiao-h3guide-library-tab");
-        imageTab.append(tabImage, imageLane.count);
-        audioTab.append(tabAudio, audioLane.count);
-        libraryTabs.append(imageTab, audioTab);
+        const libraryTabs = make("div", "ahr-tabs");
+        libraryTabs.setAttribute("role", "tablist");
+        libraryTabs.append(tabImage, tabAudio);
         const imports = make("div", "amiao-h3guide-imports");
         imports.append(addImage, addAudio);
         imageLane.head.prepend(make("strong", null, "图片关键帧"));
         audioLane.head.prepend(make("strong", null, "音频片段"));
-        const libraryHelp = make("div", "amiao-h3guide-library-help", "拖到对应轨道以放置素材；选中后在右侧修改属性。");
-        pool.append(search, libraryTabs, imports, poolBar, deck, poolCounts, libraryHelp, imageInput, audioInput);
+        pool.append(libraryTabs, search, imports, poolBar, deck, poolCounts, imageInput, audioInput);
 
         const detail = make("div", "amiao-h3guide-detail");
         const foot = make("div", "amiao-h3guide-foot");
 
         els = {
             releaseEnabled, releaseThreshold, undoBtn, redoBtn, search, settings,
-            head, headSub, timeline, ruler, trackImage, trackAudio, panBar, panThumb, pool, deck, poolKind, poolCounts,
+            head, headSub, feedback, timeline, ruler, trackImage, trackAudio, panBar, panThumb, pool, deck, poolKind, poolCounts,
             detail, foot, tabImage, tabAudio, countImage: imageLane.count, countAudio: audioLane.count,
             pxImage: imageLane.px, pxAudio: audioLane.px, imageInput, audioInput,
             // The row is the drop target for a card coming from the pool: the lane plus its
@@ -880,23 +888,40 @@ function installGuideNode(node) {
         const previewName = make("span", "amiao-h3guide-sub");
         previewHead.append(make("strong", null, "参考预览"), make("span", "amiao-h3guide-spacer"), previewName);
         const preview = make("div", "amiao-h3guide-reference-preview");
-        const previewHint = make("div", "amiao-h3guide-preview-hint", "这里预览参考素材，不是生成成片。");
         const timelineBar = make("div", "amiao-h3guide-timeline-tools");
+        const previewBtn = tool("image", "显示参考预览");
         timelineBar.append(make("strong", null, "时间轴编排"), make("span", "amiao-h3guide-spacer"),
-            make("span", "amiao-h3guide-sub", "时间轴缩放"), zoomOut, zoomIn, fitBtn);
-        center.append(previewHead, preview, previewHint, timelineBar, timeline);
+            zoomOut, zoomIn, fitBtn, previewBtn);
+        const previewPanel = make("section", "ahg-preview");
+        previewPanel.append(previewHead, preview);
+        center.append(timelineBar, timeline, previewPanel);
+        const syncPreview = () => {
+            const visible = doc.view_state.editor_preview_open;
+            previewPanel.hidden = !visible;
+            previewBtn.setAttribute("aria-pressed", String(visible));
+            previewBtn.title = visible ? "隐藏参考预览" : "显示参考预览";
+            previewBtn.setAttribute("aria-label", previewBtn.title);
+            if (visible) renderReferencePreview();
+            if (els) els.laneSpaceKey = "";
+            scheduleMeasure();
+        };
+        previewBtn.onclick = () => {
+            doc.view_state.editor_preview_open = !doc.view_state.editor_preview_open;
+            writeDoc({ dirty: false });
+            syncPreview();
+        };
         const inspector = make("aside", "amiao-h3guide-inspector");
-        const inspectorTabs = make("div", "amiao-h3guide-inspector-tabs");
-        const propertiesTab = make("button", "active", "选中素材");
-        const settingsTab = make("button", "", "生成设置");
+        const inspectorTabs = make("div", "amiao-h3guide-inspector-tabs ahr-tabs");
+        const propertiesTab = make("button", "ahr-tab", "选中素材");
+        const settingsTab = make("button", "ahr-tab", "生成设置");
         inspectorTabs.append(propertiesTab, settingsTab);
         const setInspector = (showSettings) => {
             detail.classList.toggle("amiao-h3guide-hidden", showSettings);
             settings.classList.toggle("amiao-h3guide-hidden", !showSettings);
             propertiesTab.classList.toggle("active", !showSettings);
             settingsTab.classList.toggle("active", showSettings);
-            propertiesTab.setAttribute("aria-pressed", String(!showSettings));
-            settingsTab.setAttribute("aria-pressed", String(showSettings));
+            propertiesTab.setAttribute("aria-selected", String(!showSettings));
+            settingsTab.setAttribute("aria-selected", String(showSettings));
         };
         propertiesTab.onclick = () => setInspector(false);
         settingsTab.onclick = () => setInspector(true);
@@ -950,11 +975,19 @@ function installGuideNode(node) {
         }
         els.syncSidebarWidths = syncSidebarWidths;
         body.append(pool, center, inspector);
-        Object.assign(els, { center, preview, previewName, propertiesTab, settingsTab, setInspector });
-        root.append(head, body, foot);
+        Object.assign(els, { center, preview, previewName, propertiesTab, settingsTab, setInspector, syncPreview });
+        root.append(head, body, foot, feedback);
         syncHistoryButtons();
         document.body.appendChild(root);
         syncSidebarWidths();
+        setInspector(!selectedGuide());
+        syncPreview();
+        closeBtn.focus({ preventScroll: true });
+        root.addEventListener("keydown", event => {
+            if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+            event.stopPropagation();
+            closeEditor();
+        }, { signal });
 
         closeBtn.onclick = (event) => {
             event.stopPropagation();
@@ -1017,18 +1050,14 @@ function installGuideNode(node) {
         for (const [input, kind] of [[imageInput, IMAGE_KIND], [audioInput, AUDIO_KIND]]) {
             input.addEventListener("change", () => {
                 const files = [...(input.files ?? [])];
+                const replaceId = pendingReplaceId;
+                pendingReplaceId = null;
                 input.value = "";
-                void importFiles(files, kind);
+                void importFiles(files, kind, replaceId);
             }, { signal });
+            input.addEventListener("cancel", () => { pendingReplaceId = null; }, { signal });
         }
 
-        root.addEventListener("pointermove", event => {
-            const card = event.target.closest?.(".amiao-h3guide-card");
-            if (!card) return;
-            const rect = card.getBoundingClientRect();
-            card.style.setProperty("--amiao-h3guide-pointer-x", (event.clientX - rect.left) + "px");
-            card.style.setProperty("--amiao-h3guide-pointer-y", (event.clientY - rect.top) + "px");
-        }, { signal });
         dragTitleBar(signal);
         timelinePanning(signal);
         laneKeyboard(signal);
@@ -1150,40 +1179,15 @@ function installGuideNode(node) {
     // panel really has. Card sizing is deliberately absent: the two controls are independent
     // in both directions. Returns false when the tracks do not fit; their header stays visible.
     function applyStripHeights() {
-        const wanted = laneHeights(doc.view_state);
-        const customMarkerSide = hasStripMarkerSide(doc.view_state);
-        const markerSide = customMarkerSide ? stripMarkerSide(doc.view_state) : 0;
-        const headExtra = Math.max(0, stripHead.offsetHeight - 28);
-        const plan = stripLaneHeights({
-            room: stripRoom({
-                containerHeight: container.clientHeight,
-                toolbarHeight: toolbar.offsetHeight,
-                footerHeight: nodeFooter.offsetHeight,
-            }) - headExtra,
-            image: wanted[IMAGE_KIND],
-            audio: wanted[AUDIO_KIND],
-        });
-        strip.classList.toggle("amiao-h3guide-strip-custom-card", customMarkerSide);
-        stripHeights = plan.heights;
-        stripImageTrack.style.height = `${plan.heights[IMAGE_KIND]}px`;
-        stripAudioTrack.style.height = `${plan.heights[AUDIO_KIND]}px`;
-        for (const [kind, control] of [[IMAGE_KIND, stripImageSize], [AUDIO_KIND, stripAudioSize]]) {
-            const asked = wanted[kind];
-            const got = plan.heights[kind];
-            control.px.textContent = `${got}px`;
-            control.px.classList.toggle("amiao-h3guide-lane-px-clamped", got < asked);
-            control.px.title = got === asked
-                ? "节点内的轨道高度；图片卡片大小由「卡片 − / ＋」单独设置"
-                : `面板只放得下 ${got}px（想要 ${asked}px）：把节点拉高，或调矮另一条轨道`;
-        }
-        stripCardSize.px.textContent = customMarkerSide ? `${markerSide}px` : "自动";
-        stripCardSize.px.title = customMarkerSide
-            ? "节点内图片卡片的独立边长；轨道高度、节点宽度和卡片数量都不会改变它"
-            : "当前沿用旧版自动尺寸；点击 − 或 ＋ 后改为独立尺寸";
-        for (const button of [stripCardSize.shrink, stripCardSize.grow]) {
-            button.title = "只调整节点内图片卡片，不改变弹窗或音频轨道；设置会随工作流保存";
-        }
-        return plan.fits;
+        const chrome = strip.offsetHeight - strip.clientHeight + 36;
+        const plan = stripLayout(doc.view_state.strip_open, strip.clientHeight - stripHead.offsetHeight - chrome,
+            laneHeights(doc.view_state));
+        const custom = !doc.view_state.strip_density && hasStripMarkerSide(doc.view_state);
+        strip.classList.toggle("amiao-h3guide-strip-custom-card", custom);
+        if (!plan) return false;
+        stripImageTrack.style.height = `${plan.image}px`;
+        stripAudioTrack.style.height = `${plan.audio}px`;
+        return true;
     }
 
     // Returns false when nothing changed, so the caller can skip a re-render.
@@ -1207,10 +1211,11 @@ function installGuideNode(node) {
     function markerPlanFor(surface, placedCount) {
         const laneHeight = surface.trackImage.clientHeight;
         if (surface.fitWidth) {
-            const custom = hasStripMarkerSide(doc.view_state);
+            const custom = !doc.view_state.strip_density && hasStripMarkerSide(doc.view_state);
             const budget = custom ? 0 : stripMarkerPlan({
                 laneWidth: surface.trackImage.clientWidth,
                 count: placedCount,
+                max: doc.view_state.strip_density === "medium" ? 56 : 128,
             }).markerWidth;
             return stripCardPlan({
                 laneHeight,
@@ -1428,7 +1433,7 @@ function installGuideNode(node) {
                 item.el.style.width = `${Math.max(0, item.widthFrames * surface.scale.pxPerFrame)}px`;
             }
         }
-        if (surface.playhead) surface.playhead.style.left = at(surface.playheadFrame);
+        for (const line of surface.playhead || []) line.style.left = at(surface.playheadFrame);
     }
 
     // Both copies of the timeline move together, each with its own transform.
@@ -1442,18 +1447,27 @@ function installGuideNode(node) {
 
     // Which cards a validation message names. The messages start with the card label,
     // and the footer turns each one into a button that selects that card.
-    function problemIds(problems) {
-        const bad = new Set();
-        for (const text of problems) {
-            for (const guide of doc.guides) {
-                if (guide.label && text.includes(guide.label)) bad.add(guide.id);
-            }
-        }
-        return bad;
+    function problemsForGuide(problems, guide) {
+        const label = guide.label;
+        return label ? problems.filter(text => text.startsWith(label + " ") || text.includes(" 和 " + label + " ")) : [];
     }
 
     function placedGuides() {
         return doc.guides.filter((guide) => guide.frame_index !== null && guide.frame_index !== undefined);
+    }
+
+    function paintLocation(surface) {
+        for (const line of surface.playhead || []) line.remove();
+        const guide = selectedGuide();
+        surface.playhead = null;
+        if (!guide || !isPlaced(guide) || !surface.scale) return;
+        surface.playheadFrame = Math.trunc(Number(guide.frame_index));
+        surface.playhead = [surface.ruler, surface.trackImage, surface.trackAudio].map((track, index) => {
+            const line = make("div", "amiao-h3guide-playhead" + (index ? "" : " cap"));
+            if (!index) line.dataset.frame = `${surface.playheadFrame} 帧`;
+            track.append(line);
+            return line;
+        });
     }
 
     function renderTimeline() {
@@ -1476,8 +1490,10 @@ function installGuideNode(node) {
         surface.playhead = null;
 
         if (!range.frames) {
-            surface.trackImage.append(make("span", "amiao-h3guide-lane-hint", "连接 latent 并运行后，这里才会出现时间尺"));
-            surface.trackAudio.append(make("span", "amiao-h3guide-lane-hint", "同上"));
+            surface.scale = null;
+            surface.ruler.append(make("span", "amiao-h3guide-lane-hint", "时长未确定"));
+            surface.trackImage.append(make("span", "amiao-h3guide-lane-hint", "暂无可显示关键帧"));
+            surface.trackAudio.append(make("span", "amiao-h3guide-lane-hint", "暂无可显示片段"));
             return;
         }
 
@@ -1489,6 +1505,7 @@ function installGuideNode(node) {
         const { ticks } = tickMarks(surface.scale, doc.fps, { minGapPx: surface.tickGapPx });
         for (const tick of ticks) {
             const mark = make("div", "amiao-h3guide-tick");
+            mark.title = `第 ${tick.frame} 帧`;
             mark.append(make("span", null, tick.label));
             surface.ruler.appendChild(mark);
             surface.marks.push({ el: mark, frame: tick.frame });
@@ -1499,18 +1516,10 @@ function installGuideNode(node) {
             }
         }
 
-        const selected = selectedGuide();
-        if (selected && selected.frame_index !== null && selected.frame_index !== undefined) {
-            surface.playhead = make("div", "amiao-h3guide-playhead cap");
-            surface.playheadFrame = Math.trunc(Number(selected.frame_index));
-            surface.ruler.appendChild(surface.playhead);
-        }
-
         const spans = currentSpans();
-        const bad = problemIds(currentProblems());
-        if (!placed.length) {
-            surface.trackImage.append(make("span", "amiao-h3guide-lane-hint", "把卡片拖到这条轨道，或点卡片上的「放置」"));
-        }
+        const problems = currentProblems();
+        if (!placed.some(guide => guide.kind === IMAGE_KIND)) surface.trackImage.append(make("span", "amiao-h3guide-lane-hint", "暂无图片关键帧"));
+        if (!placed.some(guide => guide.kind === AUDIO_KIND)) surface.trackAudio.append(make("span", "amiao-h3guide-lane-hint", "暂无音频片段"));
 
         // Dense markers are spread apart in display space only. declutterMarkers never touches
         // frame_index, and every square keeps an anchor tick at its true frame plus a connector
@@ -1532,9 +1541,17 @@ function installGuideNode(node) {
             const frame = Math.trunc(Number(guide.frame_index));
             const classes = [guide.kind === AUDIO_KIND ? "amiao-h3guide-clip" : "amiao-h3guide-marker"];
             if (guide.id === doc.view_state.selected_id) classes.push("selected");
-            if (bad.has(guide.id)) classes.push("invalid");
+            const problem = problemsForGuide(problems, guide).join(" · ");
+            if (problem) classes.push("invalid");
             const el = make("div", classes.join(" "));
-            if (guide.enabled === false) el.style.opacity = "0.45";
+            el.dataset.guideId = guide.id;
+            const status = guide.enabled === false ? "已停用" : (perImageStrength && isMutedImage(guide) ? "强度为 0" : "");
+            if (status) el.classList.add("ahg-inactive");
+            if (problem || status) {
+                const marker = make("span", "ahg-lane-status", problem ? "!" : status);
+                marker.title = problem || status;
+                el.append(marker);
+            }
 
             let widthFrames = 1;
             let offsetPx = 0;
@@ -1553,20 +1570,27 @@ function installGuideNode(node) {
                 img.src = imageThumbnailUrl(api, guide.asset);
                 img.alt = guide.label || "";
                 img.draggable = false;
-                el.append(img, make("span", "amiao-h3guide-marker-cap", `${guide.label} · ${frame}f`));
+                el.append(img, make("span", "amiao-h3guide-marker-cap",
+                    surface.fitWidth && doc.view_state.strip_density === "medium" ? `${frame} 帧` : `${guide.label} · ${frame} 帧`));
+                el.title = [guide.label, `第 ${frame} 帧`, problem, status].filter(Boolean).join(" · ");
                 if (perImageStrength) el.appendChild(makeStrengthBadge(guide, true));
                 if (laid?.groupSize > 1) el.append(make("span", "amiao-h3guide-group", `×${laid.groupSize}`));
                 widthFrames = 1;
             } else {
                 widthFrames = Number(spans[guide.id]) || 0;
-                const status = audioStatus(audioMetaFor(guide));
-                el.append(make("span", "amiao-h3guide-clip-cap", `${guide.label} · ${formatSeconds(frameToSeconds(widthFrames, doc.fps), 2)}s`));
+                const audio = audioStatus(audioMetaFor(guide));
+                const start = formatSeconds(frameToSeconds(frame, doc.fps), 2);
+                const end = formatSeconds(frameToSeconds(frame + widthFrames, doc.fps), 2);
+                const timing = widthFrames ? `${start}–${end}s` : `${start}s`;
+                el.append(make("span", "amiao-h3guide-clip-cap", guide.label),
+                    make("span", "amiao-h3guide-clip-cap ahg-clip-time", timing));
+                el.title = [guide.label, guide.asset.filename, timing, problem, status, audio.label].filter(Boolean).join(" · ");
                 const wave = make("canvas", "amiao-h3guide-clip-wave");
                 el.appendChild(wave);
-                if (!status.waveform) {
+                if (!audio.waveform) {
                     // drawn once the element is in the DOM, where it has a size
                     el.classList.add("amiao-h3guide-wave-none");
-                    el.append(make("span", "amiao-h3guide-wave-note", status.label));
+                    el.append(make("span", "amiao-h3guide-wave-note", audio.label));
                 }
             }
 
@@ -1579,9 +1603,13 @@ function installGuideNode(node) {
                 wave: el.querySelector(".amiao-h3guide-clip-wave"),
             });
         }
+        paintLocation(surface);
         applyScroll(surface);
         for (const item of surface.laneItems) {
-            if (item.wave) paintWave(item.wave, audioMetaFor(item.guide), null);
+            if (!item.wave) continue;
+            const meta = audioMetaFor(item.guide);
+            const trim = trimWindow(item.guide, metaSource(meta));
+            paintWave(item.wave, meta, { first: trim.startSeconds, last: trim.endSeconds, total: meta?.duration || 0 });
         }
     }
 
@@ -1799,12 +1827,18 @@ function installGuideNode(node) {
         // v2 only: a 0.00 image card is enabled and placed but never encoded. It is drawn
         // between those two states, never greyed out like a disabled card.
         card.classList.toggle("amiao-h3guide-muted", perImageStrength && isMutedImage(guide));
+        card.classList.toggle("is-skipped", guide.enabled === false);
         card.classList.toggle("amiao-h3guide-unplaced", !placed);
         card.classList.toggle("active", guide.id === doc.view_state.selected_id);
         card.setAttribute("aria-pressed", String(guide.id === doc.view_state.selected_id));
         let position = card.querySelector(".amiao-h3guide-card-position");
         if (!position) { position = make("div", "amiao-h3guide-card-position"); card.appendChild(position); }
-        position.textContent = guide.enabled === false ? "已停用" : placed ? formatSeconds(frameToSeconds(guide.frame_index, doc.fps), 2) + " 秒 · 已放置" : "待放置";
+        const timing = placed ? formatSeconds(frameToSeconds(guide.frame_index, doc.fps), 2) + " 秒" : "待放置";
+        const problem = problemsForGuide(currentProblems(), guide)[0];
+        position.textContent = [timing, guide.enabled === false ? "已停用" : "",
+            perImageStrength && isMutedImage(guide) ? "强度为 0" : "", problem ? "有问题" : ""].filter(Boolean).join(" · ");
+        position.title = problem || "";
+        card.classList.toggle("ahg-invalid", Boolean(problem));
         // 放置 only makes sense for material that is not on the timeline yet. Leaving it on
         // every placed card pushed the buttons that are always needed onto a second row.
         const place = card.querySelector(".amiao-h3guide-place");
@@ -1858,7 +1892,7 @@ function installGuideNode(node) {
     }
 
     function buildCard(guide) {
-        const card = make("div", "amiao-h3lvm-card amiao-h3guide-card");
+        const card = make("div", "ahr-card amiao-h3lvm-card amiao-h3guide-card");
         card.dataset.id = guide.id;
         card.tabIndex = 0;
         card.setAttribute("role", "button");
@@ -2078,13 +2112,15 @@ function installGuideNode(node) {
         const kind = activeTab();
         els.tabImage.classList.toggle("active", kind === IMAGE_KIND);
         els.tabAudio.classList.toggle("active", kind === AUDIO_KIND);
+        els.tabImage.setAttribute("aria-selected", String(kind === IMAGE_KIND));
+        els.tabAudio.setAttribute("aria-selected", String(kind === AUDIO_KIND));
         els.poolKind.textContent = `当前显示 ${kind === IMAGE_KIND ? "图片卡片" : "音频卡片"}`;
         const held = { [IMAGE_KIND]: 0, [AUDIO_KIND]: 0 };
         for (const guide of doc.guides) {
             if (held[guide.kind] !== undefined) held[guide.kind] += 1;
         }
-        els.countImage.textContent = `${held[IMAGE_KIND]} 张卡片`;
-        els.countAudio.textContent = `${held[AUDIO_KIND]} 张卡片`;
+        els.countImage.textContent = String(held[IMAGE_KIND]);
+        els.countAudio.textContent = String(held[AUDIO_KIND]);
         const counts = countRunnable(doc.guides);
         els.poolCounts.textContent = `启用 图片 ${counts[IMAGE_KIND]}/${MAX_GUIDE_IMAGES} · 音频 ${counts[AUDIO_KIND]}/${MAX_GUIDE_AUDIOS}`
             + ` · 合计 ${counts[IMAGE_KIND] + counts[AUDIO_KIND]}/${MAX_GUIDE_TOTAL} · 卡片 ${doc.guides.length}/${MAX_GUIDE_TOTAL}`;
@@ -2132,8 +2168,8 @@ function installGuideNode(node) {
         return String(error?.message || error || "未知错误").replace(/\s+/g, " ").trim().slice(0, 300);
     }
 
-    function importFiles(files, kind = null) {
-        return addFiles(files, kind).catch((error) => {
+    function importFiles(files, kind = null, replaceId = null) {
+        return addFiles(files, kind, replaceId).catch((error) => {
             const reason = fileError(error);
             debugEvent("native-import-failed", { reason });
             showLiveNote(`素材载入失败：${reason}`);
@@ -2142,7 +2178,7 @@ function installGuideNode(node) {
 
     // Normalize FileList and Array at the same boundary. A native drop is not restricted to
     // the visible tab: each file becomes the card its own extension says it is.
-    async function addFiles(files, kind = null) {
+    async function addFiles(files, kind = null, replaceId = null) {
         if (!root) return;
         const list = Array.from(files ?? []);
         if (!list.length) {
@@ -2186,10 +2222,10 @@ function installGuideNode(node) {
         }
         if (wrong) notes.push(wanted ? `忽略 ${wrong} 个非${wanted === IMAGE_KIND ? "图片" : "音频"}文件` : `忽略 ${wrong} 个不支持的文件`);
 
-        if (pendingReplaceId && guideById(pendingReplaceId)) {
+        if (replaceId) {
             // Replacing keeps the Guide ID and its time: only the media changes.
-            const guide = guideById(pendingReplaceId);
-            pendingReplaceId = null;
+            const guide = guideById(replaceId);
+            if (!guide) return;
             if (!incoming.length) {
                 renderFooter();
                 return;
@@ -2199,10 +2235,9 @@ function installGuideNode(node) {
             doc.guides = ensureLabels(next);
             writeDoc({ dirty: true });
             renderAll();
-            if (notes.length) showLiveNote(notes.join(" · "));
+            showLiveNote(notes.length ? notes.join(" · ") : "素材已替换");
             return;
         }
-        pendingReplaceId = null;
 
         const result = addGuides(doc.guides, incoming, { maxTotal: MAX_GUIDE_TOTAL });
         doc.guides = result.guides;
@@ -2247,11 +2282,14 @@ function installGuideNode(node) {
     // exactly how "reading audio..." and "validation passed" were shown at the same time.
     const audioInflight = new Set();
 
-    async function loadAudioMeta(guide, { retry = false } = {}) {
+    async function loadAudioMeta(guide, { retry = false, persist = true } = {}) {
         const key = mediaKeyOf(guide);
         if (audioInflight.has(key)) return audioCache.get(key) || null;
         const cached = audioCache.get(key);
-        if (cached && !retry && cached.status !== AUDIO_FAILED) return cached;
+        if (cached && !retry && cached.status !== AUDIO_FAILED) {
+            if (persist) storeAudioTrimDefaults(key, cached);
+            return cached;
+        }
         audioInflight.add(key);
         audioCache.set(key, { status: AUDIO_DECODING });
         const url = viewUrl(guide.asset);
@@ -2299,17 +2337,50 @@ function installGuideNode(node) {
         }
         audioCache.set(key, meta);
         audioInflight.delete(key);
-        if (meta.status === AUDIO_READY) {
-            // The card stores sample points, so the real numbers belong on it; the node
-            // re-decodes the file at run time either way.
-            for (const other of doc.guides) {
-                if (other.kind !== AUDIO_KIND || mediaKeyOf(other) !== key) continue;
-                if (!other.sample_rate) other.sample_rate = meta.sampleRate;
-                if (!other.source_end_sample) other.source_end_sample = meta.sampleCount;
-            }
-            writeDoc({ dirty: false });
-        }
+        if (persist) storeAudioTrimDefaults(key, meta);
         return meta;
+    }
+
+    function storeAudioTrimDefaults(key, meta) {
+        if (meta.status !== AUDIO_READY || signal.aborted) return;
+        let changed = false;
+        for (const other of doc.guides) {
+            if (other.kind !== AUDIO_KIND || mediaKeyOf(other) !== key) continue;
+            if (!other.sample_rate) { other.sample_rate = meta.sampleRate; changed = true; }
+            if (!other.source_end_sample) { other.source_end_sample = meta.sampleCount; changed = true; }
+        }
+        if (changed) writeDoc({ dirty: false });
+    }
+
+    let stripAudioLoading = false;
+    async function loadStripAudio() {
+        if (stripAudioLoading) return;
+        stripAudioLoading = true;
+        try {
+            await loadVisibleStripAudio();
+        } finally {
+            stripAudioLoading = false;
+        }
+    }
+
+    async function loadVisibleStripAudio() {
+        for (const guide of placedGuides()) {
+            if (!stripOn || signal.aborted) return;
+            if (guide.kind !== AUDIO_KIND || audioCache.has(mediaKeyOf(guide))) continue;
+            const meta = await loadAudioMeta(guide, { persist: false });
+            if (signal.aborted) return;
+            if (root && meta) {
+                storeAudioTrimDefaults(mediaKeyOf(guide), meta);
+                for (const other of doc.guides) {
+                    const card = cardEls.get(other.id);
+                    if (card && other.kind === AUDIO_KIND && mediaKeyOf(other) === mediaKeyOf(guide)) paintCardAudio(card, other);
+                }
+                syncDetail(selectedGuide());
+                renderTimeline();
+                renderFooter();
+            }
+            renderSummary();
+        }
     }
 
     // Every audio guide gets its metadata, not only the cards on the visible tab: the audio
@@ -2332,6 +2403,7 @@ function installGuideNode(node) {
             }
             renderTimeline();
             renderFooter();
+            renderSummary();
         }
     }
 
@@ -2522,6 +2594,14 @@ function installGuideNode(node) {
     function poolFileDrop(signal) {
         const dragTypes = (event) => Array.from(event.dataTransfer?.types ?? []);
         const isFileDrag = (event) => dragTypes(event).includes("Files");
+        let activeTile;
+        function markDrop(active, tile = null) {
+            els.deck.classList.toggle("amiao-h3guide-drop", active && !tile);
+            if (tile === activeTile) return;
+            activeTile?.classList.remove("is-drop-target");
+            activeTile = tile;
+            activeTile?.classList.add("is-drop-target");
+        }
 
         // The whole 卡片池 section accepts a file, not only the card grid. The title bar with the
         // 卡片大小 control is part of the area a user aims at, and a drop on the section's padding
@@ -2549,6 +2629,7 @@ function installGuideNode(node) {
                 return;
             }
             if (!insidePool(event)) {
+                markDrop(false);
                 debugEvent("native-dragover-rejected", {
                     reason: "outside-pool",
                     point: [event.clientX, event.clientY],
@@ -2561,7 +2642,7 @@ function installGuideNode(node) {
             event.preventDefault();
             event.stopPropagation();
             event.dataTransfer.dropEffect = "copy";
-            els.deck.classList.add("amiao-h3guide-drop");
+            markDrop(true, event.target?.closest?.(".ahr-add-tile") || null);
             debugEvent("native-dragover", {
                 types: dragTypes(event),
                 defaultPrevented: event.defaultPrevented,
@@ -2572,7 +2653,7 @@ function installGuideNode(node) {
         root.addEventListener("dragleave", (event) => {
             if (!isFileDrag(event)) return;
             if (els.pool.contains(event.relatedTarget)) return;
-            els.deck.classList.remove("amiao-h3guide-drop");
+            markDrop(false);
         }, { signal });
 
         root.addEventListener("drop", (event) => {
@@ -2590,7 +2671,7 @@ function installGuideNode(node) {
             }
             event.preventDefault();
             event.stopPropagation();
-            els.deck.classList.remove("amiao-h3guide-drop");
+            markDrop(false);
             const files = Array.from(event.dataTransfer?.files ?? []);
             debugEvent("native-drop", {
                 types: dragTypes(event),
@@ -3121,7 +3202,7 @@ function installGuideNode(node) {
         els.detail.replaceChildren();
         const guide = selectedGuide();
         if (!guide) {
-            els.detail.append(make("span", "amiao-h3guide-note", "选中一张卡片或轨道上的标记后，这里可以编辑完整的时间与音频裁切。"));
+            els.detail.append(make("span", "amiao-h3guide-note", "未选中素材"));
             return;
         }
 
@@ -3131,7 +3212,7 @@ function installGuideNode(node) {
             make("span", "amiao-h3guide-note", `${guide.kind === AUDIO_KIND ? "音频" : "图片"} · ${String(guide.asset.filename).split("/").pop()}`),
         );
         const actions = make("div", "amiao-h3guide-detail-actions");
-        const toggle = make("button", "amiao-h3guide-act amiao-h3guide-action-toggle", guide.enabled === false ? "启用" : "停用");
+        const toggle = make("button", `ahr-btn amiao-h3guide-act amiao-h3guide-action-toggle ${guide.enabled === false ? "is-enable" : "is-disable"}`, guide.enabled === false ? "启用" : "停用");
         toggle.title = "停用会保留这条记录、裁切和时间，但不会执行";
         toggle.onclick = (event) => {
             event.stopPropagation();
@@ -3158,11 +3239,27 @@ function installGuideNode(node) {
             mutate(patchGuide(doc.guides, guide.id, { frame_index: null }));
         };
         actions.appendChild(place);
-        const drop = make("button", "amiao-h3guide-act warn amiao-h3guide-action-delete", "删除");
+        const drop = tool("trash", "删除", "is-danger amiao-h3guide-action-delete");
         drop.title = "删除这条 Guide（与卡片池里的删除相同）";
         drop.onclick = (event) => {
             event.stopPropagation();
-            mutate(removeGuide(doc.guides, guide.id));
+            const current = actions.querySelector(".ahr-clear-confirm");
+            if (current) { current.querySelector("button")?.focus(); return; }
+            const confirm = make("div", "ahr-clear-confirm");
+            const yes = make("button", "ahr-btn is-danger-solid", "确认删除");
+            const no = make("button", "ahr-btn", "取消");
+            const dismiss = () => { confirm.remove(); drop.focus(); };
+            no.onclick = dismiss;
+            yes.onclick = () => mutate(removeGuide(doc.guides, guide.id));
+            confirm.addEventListener("keydown", key => {
+                if (key.key !== "Escape") return;
+                key.preventDefault();
+                key.stopPropagation();
+                dismiss();
+            });
+            confirm.append(make("span", "ahr-clear-text", `删除 ${guide.label}？`), yes, no);
+            actions.append(confirm);
+            no.focus();
         };
         const replace = make("button", "amiao-h3guide-act amiao-h3guide-action-replace", "替换素材");
         replace.onclick = () => {
@@ -3262,7 +3359,6 @@ function installGuideNode(node) {
         }
         els.detail.appendChild(fields);
         if (guide.kind === IMAGE_KIND) {
-            els.detail.appendChild(buildReferenceControl());
             if (perImageStrength) els.detail.appendChild(advanced);
         }
         els.detail.appendChild(actions);
@@ -3284,7 +3380,7 @@ function installGuideNode(node) {
     }
 
     function syncDetail(guide) {
-        if (!root || doc.view_state.selected_id !== guide.id) return;
+        if (!root || !guide || doc.view_state.selected_id !== guide.id) return;
         for (const row of detailSpec(guide)) {
             const field = els.detail.querySelector(`[data-key="${row.key}"]`);
             if (!field) continue;
@@ -3333,7 +3429,6 @@ function installGuideNode(node) {
             els.foot.appendChild(reset);
             return;
         }
-        if (liveNoteText) els.foot.append(make("span", "amiao-h3guide-sub", liveNoteText));
         const state = validationState(currentProblems(), pendingAudioCount(doc.guides, readyAudioKeys()));
         if (state.level === "pending") {
             els.foot.classList.add("pending");
@@ -3342,11 +3437,11 @@ function installGuideNode(node) {
         }
         if (state.level === "ok") {
             els.foot.classList.add("ok");
-            els.foot.append(make("span", null, state.text));
+            els.foot.append(make("span", null, "校验通过"));
             return;
         }
         for (const text of state.problems) {
-            const guide = doc.guides.find((item) => item.label && text.includes(item.label));
+            const guide = doc.guides.find(item => problemsForGuide([text], item).length);
             const button = make("button", "amiao-h3guide-error", text);
             button.title = guide ? "点击定位到这张卡片" : "";
             button.onclick = () => {
@@ -3359,17 +3454,18 @@ function installGuideNode(node) {
         }
     }
 
-    let liveNoteText = "";
+    let noteTimer;
 
     function showLiveNote(text) {
-        liveNoteText = String(text || "");
         if (!root) return;
-        const existing = els.foot.querySelector(".amiao-h3guide-sub");
-        if (existing) {
-            existing.textContent = liveNoteText;
-            return;
-        }
-        els.foot.insertBefore(make("span", "amiao-h3guide-sub", liveNoteText), els.foot.firstChild);
+        clearTimeout(noteTimer);
+        const feedback = els.feedback;
+        feedback.textContent = text;
+        feedback.classList.add("is-visible");
+        noteTimer = setTimeout(() => {
+            feedback.classList.remove("is-visible");
+            feedback.textContent = "";
+        }, 3000);
     }
 
     // A committed edit does not rebuild the pool: the card that was typed into keeps its
@@ -3402,15 +3498,8 @@ function installGuideNode(node) {
             for (const item of surface.laneItems) {
                 item.el.classList.toggle("selected", item.guide.id === doc.view_state.selected_id);
             }
-            surface.playhead?.remove();
-            surface.playhead = null;
-            const guide = selectedGuide();
-            if (guide && isPlaced(guide)) {
-                surface.playhead = make("div", "amiao-h3guide-playhead cap");
-                surface.playheadFrame = Math.trunc(Number(guide.frame_index));
-                surface.ruler.appendChild(surface.playhead);
-                applyScroll(surface);
-            }
+            paintLocation(surface);
+            applyScroll(surface);
         }
         if (root) renderDetail();
     }
@@ -3420,60 +3509,23 @@ function installGuideNode(node) {
     // make the node grow. The node surface below fills whatever the panel still has.
     function renderSummary() {
         const range = timelineRange();
-        const info = summaryOf(doc.guides, range.frames, doc.fps);
-        nodeFooter.replaceChildren();
-        if (perImageStrength) {
-            const counts = guideStatusCounts(doc.guides, true);
-            statusText.textContent = `生效 图片 ${counts.images} · 音频 ${counts.audios}`
-                + ` · 待放置 ${counts.unplaced} · 停用 ${counts.disabled} · 强度0 ${counts.muted}`
-                + ` · ${doc.fps} FPS · `
-                + (range.frames ? `${range.frames} 帧 / ${formatSeconds(info.duration_seconds, 2)}s` : "总帧数未知");
-            const active = counts.images + counts.audios;
-            let vaeNote = "无需 VAE";
-            if (counts.images && counts.audios) vaeNote = "需要视频 VAE + 音频 VAE";
-            else if (counts.images) vaeNote = "需要视频 VAE · 无需音频 VAE";
-            else if (counts.audios) vaeNote = "需要音频 VAE · 无需视频 VAE";
-            let checkNote = "";
-            let checkClass = "ok";
-            let checkTitle = "";
-            if (parseError) {
-                checkNote = "Guide 列表读取失败 · 打开编辑器处理";
-                checkClass = "error";
-                checkTitle = parseError;
-            } else if (active) {
-                const state = validationState(currentProblems(), pendingAudioCount(doc.guides, readyAudioKeys()));
-                checkTitle = state.problems.join("\n") || state.text;
-                if (state.level === "error") {
-                    checkNote = `编排 ${state.problems.length} 项待修正 · ${state.problems[0]}`;
-                    checkClass = "error";
-                } else if (state.level === "pending") {
-                    checkNote = "音频信息待确认 · 时长与重叠检查未完成";
-                    checkClass = "pending";
-                } else {
-                    checkNote = "编排校验通过";
-                }
-            }
-            if (checkNote) {
-                const hint = make("span", `amiao-h3lvm-hint amiao-h3guide-node-check ${checkClass}`, `${vaeNote} · ${checkNote}`);
-                hint.title = checkTitle;
-                nodeFooter.appendChild(hint);
-            }
-            scheduleStrip();
-            return;
-        }
-        // "What runs" leaves out a 0.00 image card, so the node body cannot promise an encode
-        // the node will not do. The editor quota line still counts the document, which is
-        // what the node's own quota check counts.
-        const counts = countRunnable(doc.guides);
-        const parked = doc.guides.length - counts[IMAGE_KIND] - counts[AUDIO_KIND];
-        statusText.textContent = `启用 图片 ${counts[IMAGE_KIND]} · 音频 ${counts[AUDIO_KIND]} · 不执行 ${parked}`
-            + ` · ${doc.fps} FPS · `
-            + (range.frames ? `${range.frames} 帧 / ${formatSeconds(info.duration_seconds, 2)}s` : "总帧数未知");
-        if (doc.view_state.strip_open === true) {
-            nodeFooter.append(make("span", "amiao-h3lvm-hint", "节点时间轴已开启：把节点拉高后才会显示；缩放与卡片池在 Guide 编辑器里。"));
-        } else {
-            nodeFooter.append(make("span", "amiao-h3lvm-hint", "连接 positive / latent / 视频 VAE / 音频 VAE；没有任何启用且已放置的 Guide 时，positive 原样透传。"));
-        }
+        const counts = guideStatusCounts(doc.guides, perImageStrength);
+        const active = counts.images + counts.audios;
+        const validation = validationState(currentProblems(), pendingAudioCount(doc.guides, readyAudioKeys()));
+        const [label, severity] = summaryStatus({
+            unreadable: parseError, validation, active,
+            inactive: counts.unplaced + counts.disabled + counts.muted,
+        });
+        const status = make("span", `ahg-chip ${severity}`, label);
+        status.title = parseError || validation.problems.join("\n") ||
+            `待放置 ${counts.unplaced} · 停用 ${counts.disabled}${perImageStrength ? ` · 强度为 0：${counts.muted}` : ""}`;
+        const image = make("span", "ahg-chip is-image", `图片 ${counts.images}`);
+        const audio = make("span", "ahg-chip is-audio", `音频 ${counts.audios}`);
+        const duration = make("span", "ahg-chip", range.frames
+            ? `${formatSeconds(frameToSeconds(range.frames, doc.fps), 2)}s / ${range.frames} 帧`
+            : "时长未确定");
+        duration.title = range.label ? `${range.label} · ${doc.fps} FPS` : `${doc.fps} FPS`;
+        nodeFooter.replaceChildren(image, audio, duration, status, quickRelease);
         scheduleStrip();
     }
 
@@ -3499,27 +3551,31 @@ function installGuideNode(node) {
     function fitStrip() {
         syncReleaseControls();
         const wanted = doc.view_state.strip_open === true;
-        const fits = applyStripHeights();
-        stripBtn.classList.toggle("on", wanted);
-        stripBtn.textContent = wanted ? "📈 隐藏节点时间轴" : "📈 显示节点时间轴";
         strip.classList.toggle("amiao-h3guide-strip-off", !wanted);
-        stripBody.classList.toggle("amiao-h3guide-strip-body-off", !wanted || !fits);
-        stripHint.textContent = wanted && !fits
-            ? "空间不足：拉高节点或点「卡片 −」"
-            : "整段视频按宽度铺满 · 缩放与卡片池在「打开 Guide 编辑器」";
-        stripHint.classList.toggle("amiao-h3guide-lane-px-clamped", wanted && !fits);
-        const next = wanted && fits;
-        if (next === stripOn) {
-            if (stripOn) renderSurface(nodeSurface);
-            return;
+        const fits = wanted && applyStripHeights();
+        stripBtn.setAttribute("aria-pressed", String(wanted));
+        stripBtn.title = wanted ? "隐藏节点时间轴" : "显示节点时间轴";
+        stripBtn.setAttribute("aria-label", stripBtn.title);
+        stripBtn.firstChild.className = wanted ? "pi pi-eye-slash" : "pi pi-eye";
+        for (const [value, button] of densityButtons) {
+            const active = value === (doc.view_state.strip_density || "large");
+            button.setAttribute("aria-pressed", String(active));
+            button.classList.toggle("active", active);
         }
+        stripBody.classList.toggle("amiao-h3guide-strip-body-off", !fits);
+        stripHint.hidden = fits;
+        const next = wanted && fits;
         stripOn = next;
-        if (stripOn) renderSurface(nodeSurface);
+        if (stripOn) {
+            renderSurface(nodeSurface);
+            if (!root) void loadStripAudio();
+        }
     }
 
     function renderAll() {
         renderSummary();
         if (!root) return;
+        els.syncPreview();
         const release = doc.keyframe_release || { enabled: false, threshold: 0.9 };
         els.releaseEnabled.checked = release.enabled;
         els.releaseThreshold.disabled = !release.enabled;
@@ -3543,49 +3599,6 @@ function installGuideNode(node) {
         writeDoc({ dirty: false });
         fitStrip();
         renderSummary();
-    };
-    // The strip's own height steps. The base is the height that is actually drawn, so a
-    // clamped lane answers to − at once; ＋ keeps the number the editor asked for when the
-    // panel is the limit instead of quietly lowering it.
-    const stripStepHeight = (kind, delta) => {
-        const asked = laneHeights(doc.view_state)[kind];
-        const base = delta > 0 ? Math.max(asked, stripHeights[kind]) : stripHeights[kind];
-        if (!setLaneHeight(kind, stepLaneHeight(kind, base, delta))) return;
-        writeDoc({ dirty: false });
-        if (stripOn) renderSurface(nodeSurface);
-    };
-    stripImageSize.shrink.onclick = (event) => {
-        event.stopPropagation();
-        stripStepHeight(IMAGE_KIND, -1);
-    };
-    stripImageSize.grow.onclick = (event) => {
-        event.stopPropagation();
-        stripStepHeight(IMAGE_KIND, 1);
-    };
-    stripAudioSize.shrink.onclick = (event) => {
-        event.stopPropagation();
-        stripStepHeight(AUDIO_KIND, -1);
-    };
-    stripAudioSize.grow.onclick = (event) => {
-        event.stopPropagation();
-        stripStepHeight(AUDIO_KIND, 1);
-    };
-    const stripStepCard = (delta) => {
-        const measured = markerPlanFor(nodeSurface, nodeSurface.laneItems?.length || 0).side;
-        const current = hasStripMarkerSide(doc.view_state)
-            ? stripMarkerSide(doc.view_state)
-            : measured || stripMarkerSide(doc.view_state);
-        doc.view_state.strip_marker_side = stepStripMarkerSide(current, delta);
-        writeDoc({ dirty: false });
-        fitStrip();
-    };
-    stripCardSize.shrink.onclick = (event) => {
-        event.stopPropagation();
-        stripStepCard(-1);
-    };
-    stripCardSize.grow.onclick = (event) => {
-        event.stopPropagation();
-        stripStepCard(1);
     };
     refreshBtn.onclick = (event) => {
         event.stopPropagation();
@@ -3619,6 +3632,25 @@ function installGuideNode(node) {
         renderSummary();
         if (root) renderAll();
     };
+    let durationRefreshQueued = false;
+    node._h3guideDurationChanged = () => {
+        if (durationRefreshQueued) return;
+        durationRefreshQueued = true;
+        queueMicrotask(() => {
+            durationRefreshQueued = false;
+            if (signal.aborted) return;
+            renderSummary();
+            if (!root) return;
+            renderTimeline();
+            renderDetail();
+            renderFooter();
+        });
+    };
+    window.addEventListener("amiaomiao-h3-guide-duration-changed", ({ detail }) => {
+        if (detail && (detail === generationSettings() || detail === linkedNode(node, "latent"))) {
+            node._h3guideDurationChanged();
+        }
+    }, { signal });
     node._h3guideResolved = (frames) => {
         const value = Math.max(0, Math.trunc(Number(frames) || 0));
         if (!value) return;

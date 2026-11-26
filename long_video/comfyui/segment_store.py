@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 import wave
 from functools import wraps
 import inspect
@@ -397,8 +398,12 @@ def save_segment(
     # --- meta ---
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     n_frames = int(video.shape[0])
+    # uid names this card for as long as it exists: renumbering (merge) keeps it, a
+    # re-cut into the same slot gets a new one. merge_segments passes the head's uid in meta.
+    uid = str((meta or {}).get("uid") or uuid.uuid4().hex)
     seg_meta: Dict[str, Any] = {
         "segment_id": int(seg_index_1based),
+        "uid": uid,
         "tag": tag,
         "dir": tag,
         "frames": n_frames,
@@ -823,6 +828,15 @@ def _retag(value: Any, old_tag: str, new_tag: str) -> Any:
     return value
 
 
+def _with_alias(seg: Dict[str, Any]) -> List[str]:
+    """The record's aliases plus its current dir|saved_at, for keys saved by older panels."""
+    aliases = [str(a) for a in seg.get("aliases") or [] if a] if isinstance(seg.get("aliases"), list) else []
+    current = "|".join(str(seg.get(field) or "") for field in ("dir", "saved_at"))
+    if current.strip("|") and current not in aliases:
+        aliases.append(current)
+    return aliases[-16:]
+
+
 @project_locked
 def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
     """Join neighbouring existing cards, allowing gaps left by deleted IDs.
@@ -940,6 +954,9 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
             audio = {"waveform": torch.cat(waves, dim=-1), "sample_rate": sample_rate}
 
     carried = {k: v for k, v in metas[0].items() if k not in _MERGE_OWN_KEYS}
+    # The merged card is the head card grown longer: it keeps the head's identity.
+    carried["uid"] = metas[0].get("uid") or uuid.uuid4().hex
+    carried["aliases"] = _with_alias(metas[0])
     carried.update({
         "segmentation_method": "manual_merge",
         "merged_from": ids,
@@ -991,6 +1008,10 @@ def merge_segments(project: Any, segment_ids: Any) -> Dict[str, Any]:
             if seg is None:
                 continue
             old_tag, new_tag = new_tag_prefix(old_id), new_tag_prefix(new_id)
+            # Renumbering must not lose the card: older records had no uid and were
+            # identified by dir|saved_at, which the rename is about to change.
+            seg["aliases"] = _with_alias(seg)
+            seg.setdefault("uid", uuid.uuid4().hex)
             seg["segment_id"] = new_id
             seg["tag"] = new_tag
             seg["dir"] = new_tag

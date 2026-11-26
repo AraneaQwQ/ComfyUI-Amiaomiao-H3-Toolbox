@@ -47,6 +47,23 @@ except ImportError:
 
 _LOG = logging.getLogger("h3_motion_context")
 
+# The v2 Clip Picker's 接续信息 (same custom type name as clipbin/v2_nodes.py).
+ClipLink = io.Custom("H3_CLIP_LINK")
+_CONTEXT_LENGTHS = ("5", "22", "39", "56")
+
+
+def _settings_from_link(link, context_length, audio_context_length, enable_audio_context):
+    """The Picker's join settings override this node's widgets when 接续设置 is wired."""
+    ctx = link.get("context") if isinstance(link, dict) else None
+    if not isinstance(ctx, dict):
+        return context_length, audio_context_length, enable_audio_context
+    frames = str(ctx.get("video_frames", context_length))
+    if frames not in _CONTEXT_LENGTHS:
+        raise ValueError("h3_motion_context: 接续设置里的重叠帧 %r 不是 5 / 22 / 39 / 56。"
+                         "请更新「H3 片段选择 v2」。" % frames)
+    return (frames, int(ctx.get("audio_frames", audio_context_length)),
+            bool(ctx.get("audio", enable_audio_context)))
+
 
 def _ensure_layout_ok():
     """Prove ComfyUI still places anchors the way this pack needs, once.
@@ -326,6 +343,7 @@ class MiniMaxH3MotionContext(io.ComfyNode):
                 io.Vae.Input('audio_vae', optional=True, tooltip="H3 audio VAE. Supply with context_audio to carry the previous clip's tail sound across the join. Not needed when context_latent is wired."),
                 io.Audio.Input('context_audio', optional=True, tooltip='Audio of the previous clip. The tail matching the pinned frames is encoded and pinned alongside them. Ignored when context_latent is wired.'),
                 io.Boolean.Input('enable_audio_context', optional=True, default=True, tooltip='When False, ignore audio even if context_latent is wired. Only video motion context will be used. Default True preserves original behavior.'),
+                ClipLink.Input('link', optional=True, display_name='接续设置', tooltip='接「H3 片段选择 v2」的接续信息。接上后重叠帧、声音接续、声音帧都用片段选择里的设置，这个节点上的三个值不再生效，所有 Motion Context 保持一致。'),
             ],
             outputs=[
                 io.Conditioning.Output(display_name='conditioning'),
@@ -338,7 +356,9 @@ class MiniMaxH3MotionContext(io.ComfyNode):
     def execute(cls, conditioning, vae, latent, context_length,
               audio_context_length=18, context_frames=None,
               context_latent=None, audio_vae=None, context_audio=None,
-              enable_audio_context=True):
+              enable_audio_context=True, link=None):
+        context_length, audio_context_length, enable_audio_context = _settings_from_link(
+            link, context_length, audio_context_length, enable_audio_context)
         if context_latent is None and context_frames is None:
             return io.NodeOutput(conditioning, 0)
         encode_mode, anchor_mode = ENCODE_MODE, ANCHOR_MODE

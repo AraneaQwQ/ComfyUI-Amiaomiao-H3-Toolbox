@@ -62,11 +62,13 @@ from .segment_store import (
 from .ref_presets import (
     KIND_ROOTS,
     PRESET_NAME,
+    ReferenceProjectConflict,
     create_reference_project,
     delete_reference_project,
     input_project_dir,
     list_reference_projects,
     load_references,
+    read_reference_project,
     ref_project_dir,
     rename_reference_project,
     save_references,
@@ -407,7 +409,8 @@ def register_h3lvm_routes() -> None:
         query = request.rel_url.query
         project = sanitize_project_name(query.get("project", DEFAULT_PROJECT))
         try:
-            data = await asyncio.to_thread(load_references, query.get("kind"), project)
+            reader = read_reference_project if query.get("strict") == "1" else load_references
+            data = await asyncio.to_thread(reader, query.get("kind"), project)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response(data, headers={"Cache-Control": "no-store"})
@@ -423,8 +426,11 @@ def register_h3lvm_routes() -> None:
             body = await request.json()
             if not isinstance(body, dict):
                 raise ValueError("Expected an object")
+            options = {"expected_revision": body["expected_revision"]} if "expected_revision" in body else {}
             result = await asyncio.to_thread(
-                save_references, body.get("kind"), body.get("project"), body.get("entries"))
+                save_references, body.get("kind"), body.get("project"), body.get("entries"), **options)
+        except ReferenceProjectConflict as exc:
+            return web.json_response({"error": str(exc)}, status=409)
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
         except (TypeError, KeyError):

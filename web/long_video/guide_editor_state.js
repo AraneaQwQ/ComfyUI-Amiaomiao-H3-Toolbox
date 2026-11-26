@@ -63,3 +63,19 @@ export function sidebarWidthsFor(width, desired = {}) {
 export function localPointerX(clientX, rect, cssWidth, borderLeft = 0) {
     return (clientX - rect.left) * cssWidth / Math.max(0.001, rect.width) - borderLeft;
 }
+
+export function stripLayout(open, room, requested) {
+    const height = Math.floor(room);
+    if (!open || height < 96) return null;
+    const image = Math.max(52, Math.min(height - 44,
+        Math.round(height * requested.image / (requested.image + requested.audio))));
+    return { image, audio: height - image };
+}
+
+export function summaryStatus({ unreadable, validation, inactive, active }) {
+    if (unreadable) return ["列表读取失败", "error"];
+    if (validation.level === "error") return [`问题 ${validation.problems.length}`, "error"];
+    if (validation.level === "pending") return ["音频读取中", "pending"];
+    if (inactive) return [`未生效 ${inactive}`, "pending"];
+    return active ? ["校验通过", "ok"] : ["暂无生效素材", ""];
+}

@@ -24,11 +24,31 @@ function element(tag, className, text = "") {
     return item;
 }
 
-function actionButton(text, title) {
-    const item = element("button", "amiao-h3lvm-refresh-btn amiao-h3-vc-button", text);
+function icon(name) {
+    const item = element("i", `pi pi-${name}`);
+    item.setAttribute("aria-hidden", "true");
+    return item;
+}
+
+function actionButton(text, title, iconName = "", className = "ahr-btn") {
+    const item = element("button", `${className} amiao-h3-vc-button`);
     item.type = "button";
     item.title = title;
+    item.setAttribute("aria-label", title);
+    if (iconName) item.append(icon(iconName));
+    if (text) item.append(element("span", "", text));
     return item;
+}
+
+function iconButton(iconName, title) {
+    return actionButton("", title, iconName, "ahr-icon-btn");
+}
+
+function setButton(button, iconName, text, title) {
+    button.replaceChildren(icon(iconName));
+    if (text) button.append(element("span", "", text));
+    button.title = title;
+    button.setAttribute("aria-label", title);
 }
 
 function timeText(value) {
@@ -53,14 +73,22 @@ function createCompareView(node) {
         node.setDirtyCanvas?.(true, true);
     };
 
-    const root = element("div", "amiao-h3-vc-root");
+    const root = element("div", "ahr amiao-h3-vc-root");
+    const header = element("div", "ahr-header amiao-h3-vc-header");
+    const title = element("strong", "ahr-title");
+    title.append(icon("arrows-h"), element("span", "", "H3 视频对比滑块"));
+    const headerActions = element("div", "ahr-actions");
+    const body = element("div", "ahr-body amiao-h3-vc-body");
+    const toast = element("div", "ahr-toast");
+    toast.setAttribute("role", "status");
     const stageHome = element("div", "amiao-h3-vc-stage-home");
     const stage = element("div", "amiao-h3-vc-stage");
     const before = document.createElement("video");
     const after = document.createElement("video");
     const afterLayer = element("div", "amiao-h3-vc-after-layer");
     const divider = element("div", "amiao-h3-vc-divider");
-    const grip = element("div", "amiao-h3-vc-grip", "↔");
+    const grip = element("div", "amiao-h3-vc-grip");
+    grip.append(icon("arrows-h"));
     const beforeTag = element("div", "amiao-h3-vc-tag amiao-h3-vc-before-tag");
     const afterTag = element("div", "amiao-h3-vc-tag amiao-h3-vc-after-tag");
     const placeholder = element("div", "amiao-h3-vc-placeholder", "运行节点，或在下方分别选择两个视频");
@@ -82,8 +110,8 @@ function createCompareView(node) {
     }
     after.muted = true;
 
-    const play = actionButton("▶ 播放", "同步播放或暂停两个视频");
-    const restart = actionButton("↺ 从头", "两个视频一起回到开头");
+    const play = iconButton("play", "同步播放两个视频");
+    const restart = iconButton("replay", "两个视频一起回到开头");
     const timeline = document.createElement("input");
     timeline.type = "range";
     timeline.min = "0";
@@ -91,17 +119,27 @@ function createCompareView(node) {
     timeline.step = "0.01";
     timeline.className = "amiao-h3-vc-range";
     const clock = element("span", "amiao-h3-vc-clock", "00:00 / 00:00");
-    const loop = actionButton("🔁 循环", "开启或关闭循环播放");
-    const mute = actionButton("🔇", "开启或关闭当前音源");
-    const audioSource = actionButton("🎙 原视频音频", "切换播放左右两个视频的声音");
-    const fullscreen = actionButton("⛶ 全屏", "全屏对比，滚轮缩放");
+    const loop = iconButton("sync", "开启或关闭循环播放");
+    const mute = iconButton("volume-off", "开启或关闭当前音源");
+    const audioSource = element("div", "ahs-seg amiao-h3-vc-audio");
+    audioSource.setAttribute("role", "radiogroup");
+    audioSource.setAttribute("aria-label", "音频来源");
+    const audioButtons = ["before", "after"].map(role => {
+        const button = element("button", "", role === "before" ? "左" : "右");
+        button.type = "button";
+        button.dataset.role = role;
+        button.setAttribute("role", "radio");
+        audioSource.append(button);
+        return button;
+    });
+    const fullscreen = iconButton("window-maximize", "全屏对比，滚轮缩放");
     const toolbar = element("div", "amiao-h3-vc-toolbar");
-    toolbar.append(play, restart, timeline, clock, loop, mute, audioSource, fullscreen);
+    toolbar.append(play, restart, timeline, clock, loop, mute, audioSource);
     const toolbarHome = element("div", "amiao-h3-vc-toolbar-home");
     toolbarHome.appendChild(toolbar);
 
-    const chooseBefore = actionButton("选择 / 更换", "从电脑上传处理前的视频");
-    const chooseAfter = actionButton("选择 / 更换", "从电脑上传处理后的视频");
+    const chooseBefore = actionButton("选择", "从电脑上传处理前的视频", "upload");
+    const chooseAfter = actionButton("选择", "从电脑上传处理后的视频", "upload");
     const beforePicker = document.createElement("input");
     const afterPicker = document.createElement("input");
     for (const picker of [beforePicker, afterPicker]) {
@@ -113,22 +151,20 @@ function createCompareView(node) {
     const afterName = element("span", "amiao-h3-vc-source-name", "未选择");
     const beforeSourceLabel = element("span", "amiao-h3-vc-source-label", "原视频");
     const afterSourceLabel = element("span", "amiao-h3-vc-source-label", "处理后");
-    const beforeSource = element("div", "amiao-h3-vc-source");
-    const afterSource = element("div", "amiao-h3-vc-source");
-    beforeSource.append(beforeSourceLabel, beforeName, chooseBefore);
-    afterSource.append(afterSourceLabel, afterName, chooseAfter);
+    const beforeSource = element("div", "amiao-h3-vc-source is-before");
+    const afterSource = element("div", "amiao-h3-vc-source is-after");
+    beforeSource.append(icon("video"), beforeSourceLabel, beforeName, chooseBefore);
+    afterSource.append(icon("video"), afterSourceLabel, afterName, chooseAfter);
     const fileStatus = element("div", "amiao-h3-vc-file-status");
     const fileRow = element("div", "amiao-h3-vc-file-row");
     fileRow.append(beforeSource, afterSource, beforePicker, afterPicker);
 
-    const record = actionButton("● 录制对比视频", "把当前分割画面录制成 MP4");
+    const record = actionButton("录制", "把当前分割画面录制成 MP4", "circle-fill");
     const recordStatus = element("div", "amiao-h3-vc-record-status");
-    const recordRow = element("div", "amiao-h3-vc-record-row");
-    recordRow.append(record, recordStatus);
+    headerActions.append(record, fullscreen);
+    header.append(title, headerActions);
 
-    const settings = element("details", "amiao-h3-vc-settings");
-    settings.open = true;
-    const settingsSummary = element("summary", "amiao-h3-vc-settings-summary", "⚙ 对比设置");
+    const settings = element("div", "amiao-h3-vc-settings");
     const settingsGrid = element("div", "amiao-h3-vc-settings-grid");
     const settingField = (labelText, control) => {
         const field = element("label", "amiao-h3-vc-setting");
@@ -138,6 +174,7 @@ function createCompareView(node) {
     const beforeLabelInput = document.createElement("input");
     const afterLabelInput = document.createElement("input");
     for (const [input, name] of [[beforeLabelInput, "before_label"], [afterLabelInput, "after_label"]]) {
+        input.className = "ahr-name";
         input.type = "text";
         input.name = name;
         input.maxLength = 40;
@@ -145,13 +182,16 @@ function createCompareView(node) {
     const showLabelsInput = document.createElement("input");
     showLabelsInput.type = "checkbox";
     showLabelsInput.name = "show_labels";
+    const showLabelsSwitch = element("span", "ahr-switch");
     const recordDurationInput = document.createElement("input");
+    recordDurationInput.className = "ahr-number";
     recordDurationInput.type = "number";
     recordDurationInput.name = "record_duration";
     recordDurationInput.min = "0.5";
     recordDurationInput.max = "300";
     recordDurationInput.step = "0.5";
     const fpsInput = document.createElement("input");
+    fpsInput.className = "ahr-number";
     fpsInput.type = "number";
     fpsInput.name = "fps";
     fpsInput.min = "1";
@@ -160,12 +200,26 @@ function createCompareView(node) {
     settingsGrid.append(
         settingField("左侧标签", beforeLabelInput),
         settingField("右侧标签", afterLabelInput),
-        settingField("显示标签", showLabelsInput),
         settingField("录制时长（秒）", recordDurationInput),
         settingField("IMAGE 帧率", fpsInput),
     );
-    settings.append(settingsSummary, settingsGrid);
-    root.append(stageHome, toolbarHome, fileRow, fileStatus, recordRow, settings);
+    const labelToggle = element("label", "ahr-toggle amiao-h3-vc-label-toggle");
+    labelToggle.append(showLabelsInput, showLabelsSwitch, element("span", "", "画面标签"));
+    settings.append(settingsGrid);
+    const sourceSection = element("section", "ahr-section is-video amiao-h3-vc-section");
+    const sourceHead = element("div", "ahr-section-head");
+    const sourceTitle = element("h3", "ahr-section-title");
+    sourceTitle.append(element("span", "ahr-kind-dot"), element("span", "", "对比素材"));
+    sourceHead.append(sourceTitle, element("span", "ahr-count"), labelToggle);
+    sourceSection.append(sourceHead, fileRow, fileStatus, recordStatus);
+    const settingsSection = element("section", "ahr-section amiao-h3-vc-section");
+    const settingsHead = element("div", "ahr-section-head");
+    const settingsTitle = element("h3", "ahr-section-title");
+    settingsTitle.append(icon("sliders-h"), element("span", "", "输出设置"));
+    settingsHead.append(settingsTitle);
+    settingsSection.append(settingsHead, settings);
+    body.append(stageHome, toolbarHome, sourceSection, settingsSection);
+    root.append(header, body, toast);
 
     let duration = 0;
     let splitPosition = 0.5;
@@ -179,7 +233,16 @@ function createCompareView(node) {
     let zoomOrigin = { x: 50, y: 50 };
     let zoomReadout = null;
     let destroyed = false;
+    let toastTimer = 0;
     const temporaryUrls = new Set();
+
+    function showToast(message, error = false) {
+        clearTimeout(toastTimer);
+        toast.textContent = message;
+        toast.classList.toggle("is-error", error);
+        toast.classList.add("is-visible");
+        toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2600);
+    }
 
     function mediaUrl(path) {
         return api.apiURL(`/amiaomiao_h3/lvm/video_compare/media?path=${encodeURIComponent(path)}`);
@@ -196,12 +259,13 @@ function createCompareView(node) {
         before.muted = muted || source !== "before";
         after.muted = muted || source !== "after";
         const label = sourceLabel(source);
-        audioSource.textContent = `🎙 ${label}音频`;
-        audioSource.title = `当前播放${label}音频；点击切换`;
-        audioSource.setAttribute("aria-label", `音频来源：${label}音频，点击切换`);
-        mute.textContent = muted ? "🔇" : "🔊";
+        for (const button of audioButtons) {
+            const active = button.dataset.role === source;
+            button.setAttribute("aria-checked", String(active));
+            button.title = `播放${sourceLabel(button.dataset.role)}音频`;
+        }
+        setButton(mute, muted ? "volume-off" : "volume-up", "", muted ? `开启${label}音频` : `关闭${label}音频`);
         mute.setAttribute("aria-pressed", String(muted));
-        mute.setAttribute("aria-label", muted ? `开启${label}音频` : `关闭${label}音频`);
     }
 
     function applySettings() {
@@ -217,6 +281,7 @@ function createCompareView(node) {
         const looping = Boolean(value("loop", true));
         loop.setAttribute("aria-pressed", String(looping));
         loop.title = looping ? "关闭循环播放" : "开启循环播放";
+        loop.setAttribute("aria-label", loop.title);
         applyAudioState();
         if (document.activeElement !== beforeLabelInput) beforeLabelInput.value = beforeTag.textContent;
         if (document.activeElement !== afterLabelInput) afterLabelInput.value = afterTag.textContent;
@@ -265,7 +330,7 @@ function createCompareView(node) {
     function pause() {
         before.pause();
         after.pause();
-        play.textContent = "▶ 播放";
+        setButton(play, "play", "", "同步播放两个视频");
         cancelAnimationFrame(syncFrame);
         syncFrame = 0;
     }
@@ -305,12 +370,13 @@ function createCompareView(node) {
         try {
             after.currentTime = before.currentTime;
             await Promise.all([before.play(), after.play()]);
-            play.textContent = "Ⅱ 暂停";
+            setButton(play, "pause", "", "暂停两个视频");
             if (!syncFrame) syncFrame = requestAnimationFrame(synchronize);
             return true;
         } catch (error) {
             pause();
             fileStatus.textContent = `播放失败：${error?.message || error}`;
+            showToast(fileStatus.textContent, true);
             return false;
         }
     }
@@ -384,26 +450,27 @@ function createCompareView(node) {
         toolbarHome.appendChild(toolbar);
         stage.classList.remove("amiao-h3-vc-stage-fullscreen");
         current.remove();
-        fullscreen.textContent = "⛶ 全屏";
+        setButton(fullscreen, "window-maximize", "", "全屏对比，滚轮缩放");
         zoomReadout = null;
         setZoom(1, 50, 50);
     }
 
     function openFullscreen() {
         if (overlay) return;
-        overlay = element("div", "amiao-h3-vc-overlay");
+        overlay = element("div", "ahr amiao-h3-vc-overlay");
         const header = element("div", "amiao-h3-vc-overlay-header");
-        const title = element("strong", "", "H3 视频对比滑块");
-        const tools = element("div", "amiao-h3-vc-overlay-tools");
+        const title = element("strong", "ahr-title");
+        title.append(icon("arrows-h"), element("span", "", "H3 视频对比滑块"));
+        const tools = element("div", "ahr-actions amiao-h3-vc-overlay-tools");
         zoomReadout = element("span", "amiao-h3-vc-zoom", "100%");
-        const reset = actionButton("重置缩放", "恢复 100%");
-        const close = actionButton("✕ 退出全屏", "返回 ComfyUI 节点");
+        const reset = iconButton("refresh", "恢复 100% 缩放");
+        const close = iconButton("times", "返回 ComfyUI 节点");
         tools.append(zoomReadout, reset, close);
         header.append(title, tools);
         overlay.append(header, stage, toolbar);
         stage.classList.add("amiao-h3-vc-stage-fullscreen");
         document.body.appendChild(overlay);
-        fullscreen.textContent = "✕ 退出全屏";
+        setButton(fullscreen, "window-minimize", "", "退出全屏");
         listen(reset, "click", () => setZoom(1, 50, 50));
         listen(close, "click", () => closeFullscreen());
         overlay.requestFullscreen?.().catch(() => {});
@@ -472,7 +539,7 @@ function createCompareView(node) {
         stopCapture(active.stream);
         pause();
         record.disabled = false;
-        record.textContent = "● 录制对比视频";
+        setButton(record, "circle-fill", "录制", "把当前分割画面录制成 MP4");
         record.classList.remove("amiao-h3-vc-record");
         recordStatus.textContent = "正在整理录制文件…";
     }
@@ -482,6 +549,7 @@ function createCompareView(node) {
         if (before.readyState < 2 || after.readyState < 2
                 || !before.videoWidth || !after.videoWidth) {
             recordStatus.textContent = "视频尚未加载完成，请稍候再录制。";
+            showToast(recordStatus.textContent, true);
             return;
         }
         const canvas = document.createElement("canvas");
@@ -531,7 +599,7 @@ function createCompareView(node) {
             clearTimeout(recordTimer);
             cancelAnimationFrame(recordFrame);
             record.disabled = false;
-            record.textContent = "● 录制对比视频";
+            setButton(record, "circle-fill", "录制", "把当前分割画面录制成 MP4");
             record.classList.remove("amiao-h3-vc-record");
             if (destroyed || failed) {
                 chunks.length = 0;
@@ -575,7 +643,7 @@ function createCompareView(node) {
             return;
         }
         record.disabled = false;
-        record.textContent = "■ 停止";
+        setButton(record, "stop-circle", "停止", "停止录制");
         record.classList.add("amiao-h3-vc-record");
         recordStatus.textContent = "录制中，可以拖动分割线";
         void startPlayback().then(playing => {
@@ -619,6 +687,7 @@ function createCompareView(node) {
             if (destroyed) return;
             fileStatus.classList.add("amiao-h3-vc-error");
             fileStatus.textContent = `上传失败：${error?.message || error}`;
+            showToast(fileStatus.textContent, true);
         }
     }
 
@@ -668,11 +737,12 @@ function createCompareView(node) {
         writeValue("muted", next);
         applySettings();
     });
-    listen(audioSource, "click", () => {
-        const next = value("audio_source", "before") === "after" ? "before" : "after";
-        writeValue("audio_source", next);
-        applyAudioState();
-    });
+    for (const button of audioButtons) {
+        listen(button, "click", () => {
+            writeValue("audio_source", button.dataset.role);
+            applyAudioState();
+        });
+    }
     listen(loop, "click", () => {
         writeValue("loop", !Boolean(value("loop", true)));
         applySettings();
@@ -729,6 +799,7 @@ function createCompareView(node) {
         load,
         destroy() {
             destroyed = true;
+            clearTimeout(toastTimer);
             closeFullscreen();
             if (recorder) stopRecording();
             pause();
@@ -743,7 +814,7 @@ function createCompareView(node) {
 
 try {
     for (const [id, path] of [
-        ["amiaomiao-amiao-h3lvm-styles", "./h3lvm_picker.css"],
+        ["amiaomiao-h3-refs-style", "../refs/refs.css"],
         ["amiaomiao-h3-videocompare-styles", "./video_compare.css"],
     ]) {
         if (document.getElementById(id)) continue;

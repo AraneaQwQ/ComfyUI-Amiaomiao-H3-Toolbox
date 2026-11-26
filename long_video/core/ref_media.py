@@ -94,7 +94,7 @@ def _clean_label(value, index: int) -> str:
     return " ".join(value.split())
 
 
-def parse_media_list(raw, max_items: int = MAX_REF_IMAGES) -> list:
+def parse_media_list(raw, max_items: int = MAX_REF_IMAGES, *, preserve_annotations: bool = False) -> list:
     """Return an ordered list of {"filename", "subfolder", "type"} entries.
 
     Accepts the JSON the panel writes, a plain list of file names (hand-written
@@ -151,6 +151,11 @@ def parse_media_list(raw, max_items: int = MAX_REF_IMAGES) -> list:
         label = _clean_label(item.get("label"), index) if isinstance(item, dict) else ""
         if label:
             entry["label"] = label
+        if preserve_annotations and isinstance(item, dict):
+            for field, limit in (("card_id", 120), ("purpose", 60), ("note", 400)):
+                value = item.get(field)
+                if isinstance(value, str) and value:
+                    entry[field] = value[:limit]
         # A parked card keeps its file so the panel can bring it back, but it holds
         # no slot. Absent means active, so lists saved before this feature parse the
         # same way they always did.

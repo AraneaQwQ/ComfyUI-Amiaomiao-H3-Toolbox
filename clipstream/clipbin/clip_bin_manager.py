@@ -445,7 +445,7 @@ def rebuild_project_index(project_name: str) -> Dict[str, Any]:
                     except Exception:
                         pass
     # Sort descending by creation date and unique clip_id
-    clips.sort(key=lambda c: (c.get("created_at", ""), c.get("clip_id", "")), reverse=True)
+    clips.sort(key=lambda c: (c.get("stage_completed_at") or c.get("created_at", ""), c.get("clip_id", "")), reverse=True)
     index_data = {
 
         "project_name": project_name,
@@ -458,15 +458,29 @@ def rebuild_project_index(project_name: str) -> Dict[str, Any]:
 
 
 @project_locked
-def upsert_clip_into_index(project_name: str, meta_dict: Dict[str, Any]) -> None:
+def upsert_clip_into_index(project_name: str, meta_dict: Dict[str, Any], keep_position: bool = False) -> None:
     """Atomically inserts (or refreshes) a clip entry at the front of the project index."""
     idx = load_project_index(project_name)
-    clips = [c for c in idx.get("clips", []) if c.get("clip_id") != meta_dict.get("clip_id")]
-    clips.insert(0, meta_dict)
+    old = idx.get("clips", [])
+    key = meta_dict.get("clip_id")
+    position = next((i for i, c in enumerate(old) if c.get("clip_id") == key), 0) if keep_position else 0
+    clips = [c for c in old if c.get("clip_id") != key]
+    clips.insert(position, meta_dict)
     idx["clips"] = clips
     idx["total_clips"] = len(clips)
     idx["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_project_index(project_name, idx)
+    _announce_saved(project_name, meta_dict.get("clip_id"))
+
+
+def _announce_saved(project_name: str, clip_id: Any) -> None:
+    """Tell open pickers that a project gained a card, whichever Saver wrote it."""
+    try:
+        from server import PromptServer
+        PromptServer.instance.send_sync("amiaomiao_h3/clip_bin/changed",
+                                        {"project": sanitize_project_name(project_name), "saved_id": clip_id})
+    except Exception:  # no server in tests and scripts
+        pass
 
 
 @project_locked
@@ -490,6 +504,53 @@ def delete_clip_asset(project_name: str, clip_id: str) -> bool:
         save_project_index(project_name, previous)
         raise
     return True
+
+
+MAX_SHOT_TAG_LENGTH = 60
+
+
+@project_locked
+def rename_clip(project_name: str, clip_id: str, shot_tag: Any) -> str:
+    """Rename one shot (its card title) in both the index and meta.json. Returns the new name."""
+    name = " ".join(str(shot_tag or "").split())
+    if not name:
+        raise ValueError("镜头名不能为空。")
+    if len(name) > MAX_SHOT_TAG_LENGTH:
+        raise ValueError("镜头名太长，请控制在 %d 个字符以内。" % MAX_SHOT_TAG_LENGTH)
+    checked_asset_dir(get_base_bin_dir(), get_project_dir(project_name), clip_id)
+    idx = load_project_index(project_name)
+    found = False
+    for clip in idx.get("clips", []):
+        if clip.get("clip_id") == clip_id:
+            clip["shot_tag"] = name
+            found = True
+    if not found:
+        raise FileNotFoundError("片段已不存在，请刷新列表。")
+    save_project_index(project_name, idx)
+    meta_path = os.path.join(get_project_dir(project_name), clip_id, "meta.json")
+    if os.path.isfile(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as stream:
+            meta = json.load(stream)
+        meta["shot_tag"] = name
+        atomic_write_json(meta_path, meta)
+    return name
+
+
+@project_locked
+def delete_clip_assets(project_name: str, clip_ids: list) -> Dict[str, list]:
+    """Delete several shots; locked or missing ones are reported, never removed."""
+    if not isinstance(clip_ids, list) or not clip_ids or len(clip_ids) > 500:
+        raise ValueError("请选择要删除的片段。")
+    locks = _read_card_locks(project_name)
+    deleted, locked, missing = [], [], []
+    for clip_id in dict.fromkeys(str(c) for c in clip_ids):
+        if clip_id in locks:
+            locked.append(clip_id)
+        elif delete_clip_asset(project_name, clip_id):
+            deleted.append(clip_id)
+        else:
+            missing.append(clip_id)
+    return {"deleted": deleted, "locked": locked, "missing": missing}
 
 
 def tensor_to_pil(tensor_img: torch.Tensor) -> Image.Image:
@@ -971,22 +1032,48 @@ def require_clip_kind(clip_dir: str, asset_kind: str) -> None:
         raise ValueError(f"此 Picker 只能读取{saver}保存的素材；卡片类型不匹配或 latent 文件缺失。")
 
 
+def stage_card_category(clip_dir: str, card: dict) -> str:
+    kind = clip_asset_kind(clip_dir)
+    if kind == "single":
+        return "single"
+    if kind != "dual" or not os.path.isfile(os.path.join(clip_dir, "latent_一采.safetensors")):
+        return ""
+    has_second = os.path.isfile(os.path.join(clip_dir, "latent_二采.safetensors"))
+    if card.get("workflow_mode") == "单采":
+        return "single" if not has_second else ""
+    if has_second:
+        return "dual"
+    return "draft" if card.get("workflow_mode") == "双采" and card.get("stage_recipe") else ""
+
+
 def filter_clips_by_kind(project_name: str, clips: list, asset_kind: str = "") -> list:
     """Filter without rewriting the shared project index used by the Long Builder."""
     if not asset_kind:
         return clips
-    if asset_kind not in ("single", "dual"):
-        raise ValueError("asset_kind must be single or dual")
+    if asset_kind not in ("single", "dual", "v2", "stage_single", "stage_dual"):
+        raise ValueError("unknown asset_kind")
     project_dir = get_project_dir(project_name)
-    return [c for c in clips if isinstance(c, dict) and c.get("clip_id")
-            and clip_asset_kind(os.path.join(project_dir, c["clip_id"])) == asset_kind]
+    out = []
+    for card in clips:
+        if not isinstance(card, dict) or not card.get("clip_id"):
+            continue
+        folder = os.path.join(project_dir, card["clip_id"])
+        if asset_kind.startswith("stage_"):
+            wanted = {"single"} if asset_kind == "stage_single" else {"dual", "draft"}
+            if stage_card_category(folder, card) in wanted:
+                out.append(card)
+        elif not (card.get("stage_recipe") and not card.get("variants", {}).get("二采", {}).get("has_latent")):
+            kind = clip_asset_kind(folder)
+            if kind and (asset_kind == "v2" or kind == asset_kind):
+                out.append(card)
+    return out
 
 
 
 def next_shot_tag(project_name: str, asset_kind: str) -> str:
     """Allocate a label within one Saver type; callers hold the project save lock."""
-    if asset_kind not in ("single", "dual"):
-        raise ValueError("asset_kind must be single or dual")
+    if asset_kind not in ("single", "dual", "stage_single", "stage_dual"):
+        raise ValueError("unknown asset_kind")
     cards = filter_clips_by_kind(project_name, load_project_index(project_name).get("clips", []), asset_kind)
     numbers = []
     for card in cards:

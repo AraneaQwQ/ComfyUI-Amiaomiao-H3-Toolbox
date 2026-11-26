@@ -23,12 +23,15 @@ from .clip_bin_manager import (
     rename_project,
     project_locked,
     delete_clip_asset,
+    delete_clip_assets,
+    rename_clip,
     set_clip_locks,
     ClipLockedError,
     atomic_write_json,
     list_projects,
     load_project_index,
     filter_clips_by_kind,
+    stage_card_category,
     save_project_index,
     rebuild_project_index,
     probe_video_duration,
@@ -180,7 +183,8 @@ def _persist_clip_entry(project_name: str, clip_id: str, entry: Dict[str, Any]) 
 
 @project_locked
 def get_project_clips_api(project_name: str, variant_policy: str = "",
-                        want_probe: bool = False, asset_kind: str = "") -> Dict[str, Any]:
+                        want_probe: bool = False, asset_kind: str = "",
+                        join_view: bool = False) -> Dict[str, Any]:
     """Retrieves full clip metadata and relative thumbnail paths for the frontend.
 
     ``variant_policy`` is optional: when the Long Builder passes its own policy, each
@@ -260,7 +264,18 @@ def get_project_clips_api(project_name: str, variant_policy: str = "",
         if _probe_and_fix_durations(p_name, clip_id, c, clip_dir):
             _persist_clip_entry(p_name, clip_id, c)
 
-        enriched = dict(c)
+        enriched = {k: v for k, v in c.items() if k not in ("stage_recipe", "stage_context")}
+        if asset_kind.startswith("stage_"):
+            enriched["clip_stage"] = stage_card_category(clip_dir, c)
+            enriched["stage_ready"] = bool(c.get("stage_recipe") and c.get("stage_revision"))
+            variant = "二采" if enriched["clip_stage"] == "dual" else "一采"
+            if c.get("variants"):
+                chosen = c["variants"].get(variant, {}).get("video_file", "")
+                still = f"first_frame_{variant}.png"
+                if chosen and os.path.isfile(os.path.join(clip_dir, chosen)):
+                    has_video, video_file, video_url = True, chosen, preview_url(os.path.join(clip_dir, chosen), subfolder)
+                    if os.path.isfile(os.path.join(clip_dir, still)):
+                        preview_file = still
         enriched["thumbnail_file"] = preview_file
         enriched["subfolder"] = subfolder
         enriched["thumbnail_url"] = preview_url(os.path.join(clip_dir, preview_file), subfolder) if preview_file else ""
@@ -272,9 +287,16 @@ def get_project_clips_api(project_name: str, variant_policy: str = "",
             # Real stream parameters of the file that would be joined, measured once.
             joined_file = video_file
             if variant_policy:
-                _variant, chosen, _variant_meta = pick_variant(c, variant_policy)
+                variant, chosen, _variant_meta = pick_variant(c, variant_policy)
                 if chosen and os.path.isfile(os.path.join(clip_dir, chosen)):
                     joined_file = chosen
+                    if join_view:
+                        enriched["join_video_url"] = preview_url(os.path.join(clip_dir, chosen), subfolder)
+                elif join_view:
+                    joined_file = ""
+                if join_view:
+                    enriched["join_has_video"] = bool(joined_file)
+                    enriched["join_variant"] = variant if joined_file else ""
             fields, measured_now = _video_probe_fields(clip_dir, joined_file, c)
             if measured_now:
                 _persist_clip_entry(p_name, clip_id, c)
@@ -354,7 +376,7 @@ def list_projects_api(videos_only: bool = False, asset_kind: str = "") -> Dict[s
         total_cards = len(cards)
         locked_cards = sum(bool(c.get("locked")) for c in cards)
         cards = filter_clips_by_kind(name, cards, asset_kind)
-        if asset_kind and not cards:
+        if asset_kind and not cards and not asset_kind.startswith("stage_"):
             continue
         project_dir = get_project_dir(name)
         videos = sum(1 for c in cards
@@ -403,10 +425,11 @@ def register_clip_bin_routes() -> None:
         project = request.rel_url.query.get("project", "Default_Project")
         variant_policy = request.rel_url.query.get("variant_policy", "")
         want_probe = request.rel_url.query.get("probe", "").strip().lower() in ("1", "true", "yes")
+        join_view = request.rel_url.query.get("join_view") == "1"
         asset_kind = request.rel_url.query.get("asset_kind", "")
-        if asset_kind not in ("", "single", "dual"):
-            raise web.HTTPBadRequest(text="asset_kind must be single or dual")
-        data = await asyncio.to_thread(get_project_clips_api, project, variant_policy, want_probe, asset_kind)
+        if asset_kind not in ("", "single", "dual", "v2", "stage_single", "stage_dual"):
+            raise web.HTTPBadRequest(text="unknown asset_kind")
+        data = await asyncio.to_thread(get_project_clips_api, project, variant_policy, want_probe, asset_kind, join_view)
         return web.json_response(data, headers={"Cache-Control": "no-store"})
 
 
@@ -414,8 +437,8 @@ def register_clip_bin_routes() -> None:
     async def handle_projects(request):
         videos_only = (request.rel_url.query.get("videos_only") or "").lower() in ("1", "true", "yes")
         asset_kind = request.rel_url.query.get("asset_kind", "")
-        if asset_kind not in ("", "single", "dual"):
-            raise web.HTTPBadRequest(text="asset_kind must be single or dual")
+        if asset_kind not in ("", "single", "dual", "v2", "stage_single", "stage_dual"):
+            raise web.HTTPBadRequest(text="unknown asset_kind")
         data = await asyncio.to_thread(list_projects_api, videos_only, asset_kind)
         return web.json_response(data, headers={"Cache-Control": "no-store"})
 
@@ -559,5 +582,48 @@ def register_clip_bin_routes() -> None:
             return web.json_response({"error": "片段已不存在，请刷新列表。"}, status=404)
         prompt_server.send_sync("amiaomiao_h3/clip_bin/changed", {"project": project, "deleted_id": asset_id})
         return web.json_response({"deleted": asset_id})
+
+    async def _json_body(request):
+        blocked = _csrf_block(request)
+        if blocked is not None:
+            return None, blocked
+        if request.content_type != "application/json":
+            return None, web.json_response({"error": "Expected JSON"}, status=415)
+        body = await request.json()
+        if not isinstance(body, dict) or not isinstance(body.get("project"), str) or not body["project"].strip():
+            return None, web.json_response({"error": "缺少项目名称"}, status=400)
+        return body, None
+
+    @routes.post("/amiaomiao_h3/clip_bin/rename")
+    async def handle_rename_clip(request):
+        try:
+            body, error = await _json_body(request)
+            if error is not None:
+                return error
+            name = await asyncio.to_thread(rename_clip, body["project"], str(body.get("clip_id") or ""), body.get("shot_tag"))
+        except FileNotFoundError as exc:
+            return web.json_response({"error": str(exc)}, status=404)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except OSError:
+            logger.exception("Failed to rename shot")
+            return web.json_response({"error": "改名失败：文件可能被占用或没有写入权限。"}, status=409)
+        prompt_server.send_sync("amiaomiao_h3/clip_bin/changed", {"project": body["project"]})
+        return web.json_response({"shot_tag": name}, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/amiaomiao_h3/clip_bin/delete_many")
+    async def handle_delete_many(request):
+        try:
+            body, error = await _json_body(request)
+            if error is not None:
+                return error
+            result = await asyncio.to_thread(delete_clip_assets, body["project"], body.get("clip_ids"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except OSError:
+            logger.exception("Failed to delete shots")
+            return web.json_response({"error": "删除失败：文件可能被占用或没有写入权限，请关闭预览后重试。"}, status=409)
+        prompt_server.send_sync("amiaomiao_h3/clip_bin/changed", {"project": body["project"]})
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     logger.info("[Clip Bin API] Successfully registered /amiaomiao_h3/clip_bin routes with PromptServer.")

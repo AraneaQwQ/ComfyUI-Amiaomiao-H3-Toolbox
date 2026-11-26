@@ -41,11 +41,14 @@ def video_stream(latent, label):
 
 
 def restore_overlap(samples, trim_frames, enabled=True, context_latent=None,
-                    color_compensation=False, color_strength=0.25, color_fade_frames=22):
+                    color_compensation=False, color_strength=0.25, color_fade_frames=22,
+                    color_follow_overlap=False):
     """Copy only an aligned parent suffix; never mutate either input."""
     if not enabled or trim_frames == 0:
         return samples
     if color_compensation:
+        if color_follow_overlap:
+            color_fade_frames = trim_frames
         if not math.isfinite(color_strength) or not 0 <= color_strength <= 1:
             raise ValueError("H3 Overlap Restore: color_strength must be finite and in [0, 1].")
         if (isinstance(color_fade_frames, bool)
@@ -155,9 +158,14 @@ class MiniMaxH3OverlapRestoreClipStream(io.ComfyNode):
                 ),
                 io.Int.Input(
                     "color_fade_frames", default=22, min=0, max=120, optional=True,
-                    display_name="补偿衰减帧数",
+                    display_name="手动衰减帧数",
                     tooltip="接点后按余弦曲线衰减。仅覆盖窗口内完整 latent 时间步，"
                             "实际范围向下对齐；0 只恢复重叠。这不是空间分区调色。",
+                ),
+                io.Boolean.Input(
+                    "color_follow_overlap", default=False, optional=True,
+                    display_name="补偿衰减范围", label_on="跟随重叠", label_off="手动",
+                    tooltip="使用对应采样阶段 Motion Context 实际输出的重叠帧数，无需额外接线。",
                 ),
             ],
             outputs=[io.Latent.Output(display_name="latent")],
@@ -165,10 +173,11 @@ class MiniMaxH3OverlapRestoreClipStream(io.ComfyNode):
 
     @classmethod
     def execute(cls, samples, trim_frames, enabled=True, context_latent=None,
-                color_compensation=False, color_strength=0.25, color_fade_frames=22):
+                color_compensation=False, color_strength=0.25, color_fade_frames=22,
+                color_follow_overlap=False):
         return io.NodeOutput(restore_overlap(
             samples, trim_frames, enabled, context_latent,
-            color_compensation, color_strength, color_fade_frames,
+            color_compensation, color_strength, color_fade_frames, color_follow_overlap,
         ))
 
 

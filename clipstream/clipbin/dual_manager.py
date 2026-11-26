@@ -23,6 +23,8 @@ import os
 import json
 import logging
 import shutil
+import tempfile
+from uuid import uuid4
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -63,6 +65,7 @@ from .clip_bin_manager import (
     probe_video_duration,
     encode_images_to_mp4,
     list_projects,
+    atomic_write_json,
 )
 
 logger = logging.getLogger("minimax_clip_bin_dual")
@@ -124,6 +127,9 @@ def save_dual_clip_asset(
     video_file_name_b: Any = "",
     save_video: bool = True,
     fps: float = 24.0,
+    workflow_mode: str = "",
+    _staging_dir: Optional[str] = None,
+    _target_id: str = "",
 ) -> Tuple[DualClipMeta, str, Image.Image]:
     """Saves a dual-variant clip asset.
     
@@ -159,10 +165,10 @@ def save_dual_clip_asset(
         actual_shot = next_shot_tag(project_name, "dual")
 
     tag_slug = "".join(c for c in actual_shot if c.isalnum() or c in ("_", "-")).strip() or "Shot"
-    clip_id = f"clip_{timestamp_str}_{tag_slug}"
+    clip_id = _target_id or f"clip_{timestamp_str}_{tag_slug}"
 
     project_dir = get_project_dir(project_name)
-    clip_dir = os.path.join(project_dir, clip_id)
+    clip_dir = _staging_dir if _staging_dir else os.path.join(project_dir, clip_id)
     os.makedirs(clip_dir, exist_ok=True)
 
     meta_obj = DualClipMeta(
@@ -278,11 +284,14 @@ def save_dual_clip_asset(
     # Save meta.json
     meta_json_path = os.path.join(clip_dir, "meta.json")
     meta_dict = asdict(meta_obj)
+    if workflow_mode:
+        meta_dict["workflow_mode"] = workflow_mode
     with open(meta_json_path, "w", encoding="utf-8") as f:
         json.dump(meta_dict, f, indent=2, ensure_ascii=False)
 
     # Update project index (atomic under the per-project lock)
-    upsert_clip_into_index(project_name, meta_dict)
+    if not _staging_dir:
+        upsert_clip_into_index(project_name, meta_dict)
 
     logger.info("[Dual Clip Bin] Stored '%s' (%s) in '%s'",
                 clip_id, "/".join(meta_obj.variant_labels), project_name)
@@ -290,7 +299,80 @@ def save_dual_clip_asset(
 
 
 @project_locked
-def load_dual_clip_asset(project_name: str, clip_id: str) -> Dict[str, Any]:
+def save_stage_asset(project_name, *, plan, context, workflow_mode, **kwargs):
+    from .clip_stage import get_stage_card
+
+    stage = plan["stage"]
+    project_dir = get_project_dir(project_name)
+    old = get_stage_card(project_name, plan["clip_id"], plan["revision"]) if stage == "second" else None
+    target_id = old["clip_id"] if old else ""
+    if target_id and (os.path.basename(target_id) != target_id or not target_id.startswith("clip_")):
+        raise ValueError("不合法的片段 ID。")
+    root = tempfile.mkdtemp(prefix=".h3-stage-", dir=project_dir)
+    staging, backup = (os.path.join(root, name) for name in ("new", "old"))
+    keep_backup = False
+    try:
+        if old:
+            kwargs.update(shot_tag=old["shot_tag"], latent_a=None)
+        elif (kwargs.get("shot_tag") or "Auto").strip().startswith("Auto") or not (kwargs.get("shot_tag") or "").strip():
+            kwargs["shot_tag"] = next_shot_tag(project_name, "stage_single" if stage == "single" else "stage_dual")
+        meta, _dir, _preview = save_dual_clip_asset(
+            project_name=project_name, _staging_dir=staging, _target_id=target_id, **kwargs)
+        required = "一采" if stage in ("first", "single") else "二采"
+        if not meta.variants[required].has_latent or not meta.variants[required].has_video:
+            raise ValueError(f"{required}视频或 latent 未完整保存，项目卡片没有变更。")
+        card = {**asdict(meta), "workflow_mode": workflow_mode, "stage_revision": uuid4().hex,
+                "stage_recipe": plan.get("recipe"), "stage_context": context}
+        final = os.path.join(project_dir, meta.clip_id)
+        rerun = bool(old and old["variants"].get("二采", {}).get("has_latent"))
+        if old:
+            # The original first-pass files are immutable. Keep their bytes and card identity.
+            for entry in os.scandir(final):
+                if not entry.is_file() or entry.name in ("meta.json", "preview.png") \
+                        or entry.name.startswith(("latent_二采.", "first_frame_二采.", "tail_frame_二采.", "video_二采.")):
+                    continue
+                dst = os.path.join(staging, entry.name)
+                try:
+                    os.link(entry.path, dst)
+                except OSError:
+                    shutil.copy2(entry.path, dst)
+            card = {k: v for k, v in old.items() if k not in ("locked", "stage_revision")}
+            card["stage_revision"] = uuid4().hex
+            card["variants"] = {**card["variants"], "二采": asdict(meta.variants["二采"])}
+            # Top-level media fields may have been cached by an earlier index rebuild.
+            for key in ("video_file", "has_video", "associated_video_path"):
+                card.pop(key, None)
+            meta.variants["一采"] = VariantMeta(**{
+                k: v for k, v in old["variants"]["一采"].items() if k in VariantMeta.__dataclass_fields__
+            })
+        if stage in ("full", "second") and not rerun:
+            card["stage_completed_at"] = datetime.now().isoformat(sep=" ", timespec="microseconds")
+        atomic_write_json(os.path.join(staging, "meta.json"), card)
+        if old:
+            os.rename(final, backup)
+        try:
+            os.rename(staging, final)
+            try:
+                upsert_clip_into_index(project_name, card, keep_position=rerun)
+            except Exception:
+                os.rename(final, staging)
+                raise
+        except Exception:
+            if old:
+                keep_backup = True
+                os.rename(backup, final)
+                keep_backup = False
+            raise
+        return meta
+    finally:
+        if not keep_backup:
+            shutil.rmtree(root, ignore_errors=True)
+        else:
+            logger.error("H3 could not restore the previous card; backup preserved at %s", backup)
+
+
+@project_locked
+def load_dual_clip_asset(project_name: str, clip_id: str, variants=VARIANTS, frames=True) -> Dict[str, Any]:
     """Loads a dual-variant clip asset from disk.
     
     Returns a dict with:
@@ -322,7 +404,7 @@ def load_dual_clip_asset(project_name: str, clip_id: str) -> Dict[str, Any]:
         "variants": {},
     }
 
-    for variant_name in VARIANTS:
+    for variant_name in variants:
         latent_file = os.path.join(clip_dir, f"latent_{variant_name}.safetensors")
         vdata: Dict[str, Any] = {"has_latent": False, "latent": None, "first_frame": None, "tail_frame": None}
 
@@ -342,9 +424,9 @@ def load_dual_clip_asset(project_name: str, clip_id: str) -> Dict[str, Any]:
         first_path = os.path.join(clip_dir, f"first_frame_{variant_name}.png")
         tail_path = os.path.join(clip_dir, f"tail_frame_{variant_name}.png")
 
-        if os.path.isfile(first_path):
+        if frames and os.path.isfile(first_path):
             vdata["first_frame"] = pil_to_tensor(Image.open(first_path))
-        if os.path.isfile(tail_path):
+        if frames and os.path.isfile(tail_path):
             vdata["tail_frame"] = pil_to_tensor(Image.open(tail_path))
 
         result["variants"][variant_name] = vdata

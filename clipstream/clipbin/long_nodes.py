@@ -107,6 +107,10 @@ class MiniMaxClipBinLongBuilderNode(io.ComfyNode):
             logger.warning("[Long Builder] %s", warning)
         # The sockets were dropped on purpose, so the audit trail lives in the log.
         logger.info("[Long Builder]\n%s", result["report"])
+        return cls.result_output(result)
+
+    @classmethod
+    def result_output(cls, result):
         return io.NodeOutput(
             InputImpl.VideoFromFile(result["path"]),
             ui=ui.PreviewVideo([ui.SavedResult(result["filename"], result["subfolder"],
@@ -114,4 +118,24 @@ class MiniMaxClipBinLongBuilderNode(io.ComfyNode):
         )
 
 
-NODE_LIST = [MiniMaxClipBinLongBuilderNode]
+class H3LongBuilderV3(MiniMaxClipBinLongBuilderNode):
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        schema.node_id = "H3LongBuilderV3"
+        schema.display_name = "H3 长视频拼接 V3"
+        schema.outputs = []
+        return schema
+
+    @classmethod
+    def result_output(cls, result):
+        return io.NodeOutput(ui={
+            "h3v3_film": [{
+                "filename": result["filename"], "subfolder": result["subfolder"], "type": "output",
+                "frames": result["total_frames"], "seconds": result["duration_seconds"],
+                "report": result["report"], "warnings": result["warnings"],
+            }],
+        })
+
+
+NODE_LIST = [MiniMaxClipBinLongBuilderNode, H3LongBuilderV3]
