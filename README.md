@@ -14,6 +14,8 @@
 - 支持引导时间线、视频对比和工作流级界面配色。
 - H3 提示词编写器：支持六区中文编排与原生输入、素材与主体引用、镜头模板，并新增「视频时长（秒）」输出。时长输出是秒数，不是帧数；原有输出顺序不变。
 - 工具箱使用独立节点 ID、API 和素材目录，可与原插件共存。首次启动会在后台尝试复制旧素材库，已有同名目标项目不会覆盖。
+- 界面与操作优化：升级了生成设置、参考素材、提示词、片段选择 v2、视频裁切 V3、长视频拼接 V3、两采 Sigma 及项目库弹窗界面；参考素材支持按标签筛选、一键开关备注栏、音频波形左右滑块微调裁切；四节点统一在左下角支持 50%–200% 卡片大小滑块；提示词支持拖动分隔条调宽素材栏；在 ComfyUI 设置的「显示与字体」中可调整字体与高分屏清晰度。
+- 新增「【阿喵喵&熙云】H3双采接续工作流」，并修复了删改镜头后长视频拼接不自动更新及单独运行拼接/裁切节点时被误拦截的问题。
 
 ## 安装
 
@@ -46,3 +48,8 @@ python -m pip install -r ComfyUI-Amiaomiao-H3-Toolbox/requirements.txt
 ## 许可证和来源
 
 本项目按 GPL-3.0 发布，完整许可证见 [LICENSE](LICENSE)。ClipStream 所含上游项目及作者见 [ATTRIBUTION.md](ATTRIBUTION.md)；Long Video Manager 基于 [AraneaQwQ/H3-Long-Video-Manager](https://github.com/AraneaQwQ/H3-Long-Video-Manager)，包含 RAFOLIE 的贡献，其 MIT 许可证见 [LVM-MIT-LICENSE](LVM-MIT-LICENSE)。
+
+## 开发者名单
+
+- **[阿喵喵Az](https://space.bilibili.com/36380937)**（[B站主页](https://space.bilibili.com/36380937)）
+- **[熙云君](https://space.bilibili.com/215190289)**（[B站主页](https://space.bilibili.com/215190289)）
