@@ -261,7 +261,6 @@ def plan_submission(graph):
     saver = savers[0]
     pin, sin = graph[picker]["inputs"], graph[saver]["inputs"]
     first = _wired(sin, "latent_1")
-    first_video = _wired(sin, "draft_video")
     first_path = _closure(graph, [first[0]])
     first_samplers = _samplers(graph, first_path)
     if len(first_samplers) != 1:
@@ -301,7 +300,7 @@ def plan_submission(graph):
         replay[prep[0]]["inputs"]["first_pass"] = [picker, 4]
         replay_saver = replay[saver]["inputs"]
         replay_saver["latent_1"] = [picker, 4]
-        replay_saver.pop("draft_video")
+        replay_saver.pop("draft_video", None)
         reach = _closure(replay, [saver])
         if _samplers(replay, reach) != second_samplers or first[0] in reach:
             raise _fail("二采分支还依赖一采",
@@ -326,6 +325,7 @@ def plan_submission(graph):
                 plan["second_size"] = requested
 
     if stage in ("first", "single"):
+        first_video = _wired(sin, "draft_video")
         sin["video"] = first_video
         for key in ("latent_2", "draft_video", "images", "audio"):
             sin.pop(key, None)
@@ -336,7 +336,7 @@ def plan_submission(graph):
                         "把一采解码出的视频接到片段保存的 draft_video。")
         graph = _slice(graph, reach)
     if stage == "full":
-        sin.pop("draft_video")
+        sin.pop("draft_video", None)
     graph[picker]["inputs"]["stage_plan"] = json.dumps(plan, ensure_ascii=False)
     # Removing all unneeded nodes also protects hosts that do not support partial targets.
     # Keep every original output for normal dual mode (compare, cache cleanup, etc.).
