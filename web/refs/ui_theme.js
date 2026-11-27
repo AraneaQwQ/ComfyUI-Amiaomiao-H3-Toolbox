@@ -21,6 +21,196 @@ const DEFAULT = { background: "charcoal", accent: "teal", buttonSize: "small" };
 const MARGIN = 6;
 const PANEL_HEIGHT = 166 + MARGIN * 2;
 
+// ---------- ComfyUI Global Settings: Typography, Anti-Stripe & High-DPI Adaptation ----------
+const DISPLAY_SETTINGS = {
+    fontFamily: "AmiaomiaoH3.Toolbox.FontFamily",
+    customFont: "AmiaomiaoH3.Toolbox.CustomFont",
+    clarity: "AmiaomiaoH3.Toolbox.TextClarity",
+    dpiPreset: "AmiaomiaoH3.Toolbox.DpiPreset",
+    fontScale: "AmiaomiaoH3.Toolbox.FontScale",
+};
+
+const FONT_PRESETS = {
+    "清晰黑体（自动推荐）": {
+        sans: '"HarmonyOS Sans SC", "MiSans", "Alibaba PuHuiTi 3.0", "PingFang SC", "Microsoft YaHei", "SimHei", system-ui, sans-serif',
+        mono: '"Cascadia Mono", Consolas, ui-monospace, monospace',
+    },
+    "微软雅黑（标准）": {
+        sans: '"Microsoft YaHei", "Microsoft YaHei UI", system-ui, sans-serif',
+        mono: '"Cascadia Mono", Consolas, ui-monospace, monospace',
+    },
+    "思源黑体 / Noto Sans": {
+        sans: '"Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", system-ui, sans-serif',
+        mono: '"Cascadia Mono", Consolas, ui-monospace, monospace',
+    },
+    "黑体 SimHei（防条纹最强）": {
+        sans: '"SimHei", "Microsoft YaHei", system-ui, sans-serif',
+        mono: '"Cascadia Mono", Consolas, ui-monospace, monospace',
+    },
+    "更纱等宽（数字极清）": {
+        sans: '"Sarasa Gothic SC", "Cascadia Mono", Consolas, "Microsoft YaHei", monospace',
+        mono: '"Sarasa Gothic SC", "Cascadia Mono", Consolas, ui-monospace, monospace',
+    },
+};
+
+const CLARITY_PRESETS = {
+    "清晰加厚 · 防条纹（推荐）": {
+        key: "crisp",
+        body: 500,
+        ui: 600,
+        strong: 700,
+        render: "geometricPrecision",
+        smooth: "antialiased",
+    },
+    "特粗高对比（远视距）": {
+        key: "bold",
+        body: 600,
+        ui: 700,
+        strong: 800,
+        render: "geometricPrecision",
+        smooth: "antialiased",
+    },
+    "原生细字重": {
+        key: "standard",
+        body: 400,
+        ui: 600,
+        strong: 700,
+        render: "auto",
+        smooth: "auto",
+    },
+};
+
+function detectDpiMultiplier() {
+    const dpr = Number(globalThis.devicePixelRatio) || 1;
+    const screenW = Number(globalThis.screen?.width) || 1920;
+    const screenH = Number(globalThis.screen?.height) || 1080;
+    const physW = Math.round(screenW * dpr);
+    const physH = Math.round(screenH * dpr);
+    if (physW >= 3400 || physH >= 2000) return dpr <= 1.55 ? 1.14 : 1.06; // 4K
+    if (physW >= 2300 || physH >= 1300) return dpr <= 1.25 ? 1.08 : 1.04; // 2K
+    return 1.03; // 1080p & standard displays
+}
+
+function resolveDpiMultiplier(preset) {
+    if (preset === "1080p 优化（防条纹）") return 1.04;
+    if (preset === "2K 屏优化（1440p）") return 1.10;
+    if (preset === "4K 屏优化（2160p）") return 1.16;
+    if (preset === "关闭自动补偿（100%）") return 1.00;
+    return detectDpiMultiplier();
+}
+
+function readDisplaySetting(id, fallback) {
+    const value = app.ui?.settings?.getSettingValue?.(id);
+    return value === undefined || value === null ? fallback : value;
+}
+
+function applyDisplaySettings() {
+    const root = document.documentElement;
+    if (!root) return;
+
+    const fontChoice = String(readDisplaySetting(DISPLAY_SETTINGS.fontFamily, "清晰黑体（自动推荐）"));
+    const customFont = String(readDisplaySetting(DISPLAY_SETTINGS.customFont, "")).trim();
+    const clarityChoice = String(readDisplaySetting(DISPLAY_SETTINGS.clarity, "清晰加厚 · 防条纹（推荐）"));
+    const dpiChoice = String(readDisplaySetting(DISPLAY_SETTINGS.dpiPreset, "自动适配（1080p / 2K / 4K）"));
+    const scaleRaw = Number(readDisplaySetting(DISPLAY_SETTINGS.fontScale, 100));
+    const scalePct = Number.isFinite(scaleRaw) ? Math.min(135, Math.max(85, scaleRaw)) : 100;
+
+    const fontSpec = FONT_PRESETS[fontChoice] || FONT_PRESETS["清晰黑体（自动推荐）"];
+    const sans = (fontChoice === "自定义字体（填下方名称）" && customFont)
+        ? `${customFont}, "Microsoft YaHei", system-ui, sans-serif`
+        : fontSpec.sans;
+    const clarity = CLARITY_PRESETS[clarityChoice] || CLARITY_PRESETS["清晰加厚 · 防条纹（推荐）"];
+    const dpiMul = resolveDpiMultiplier(dpiChoice);
+    const finalScale = Math.min(1.5, Math.max(0.85, Math.round(dpiMul * (scalePct / 100) * 1000) / 1000));
+
+    root.dataset.amiaomiaoH3Clarity = clarity.key;
+    root.style.setProperty("--h3-font-family", sans);
+    root.style.setProperty("--h3-font-mono", fontSpec.mono);
+    root.style.setProperty("--h3-font-scale", String(finalScale));
+    root.style.setProperty("--h3-weight-body", String(clarity.body));
+    root.style.setProperty("--h3-weight-ui", String(clarity.ui));
+    root.style.setProperty("--h3-weight-strong", String(clarity.strong));
+    root.style.setProperty("--h3-text-render", clarity.render);
+    root.style.setProperty("--h3-font-smooth", clarity.smooth);
+}
+
+let displaySettingsRegistered = false;
+function registerDisplaySettings() {
+    if (displaySettingsRegistered) return;
+    const add = app.ui?.settings?.addSetting;
+    if (typeof add !== "function") return;
+    displaySettingsRegistered = true;
+
+    const onChange = () => applyDisplaySettings();
+    // ComfyUI addSetting displays items in reverse registration order (LIFO), so register bottom-to-top.
+    const defs = [
+        {
+            id: DISPLAY_SETTINGS.fontScale,
+            category: ["Amiaomiao H3 Toolbox", "显示与字体", "全局字体大小微调"],
+            name: "全局字体大小微调 (%)",
+            tooltip: "在高 DPI 适配基础上按百分比微调全部 6 个 H3 核心节点与项目库弹窗的字号（85% ~ 135%），实时生效无需重启。",
+            type: "slider",
+            defaultValue: 100,
+            attrs: { min: 85, max: 135, step: 5 },
+            onChange,
+        },
+        {
+            id: DISPLAY_SETTINGS.dpiPreset,
+            category: ["Amiaomiao H3 Toolbox", "显示与字体", "高 DPI 适配"],
+            name: "高 DPI / 屏幕清晰度适配",
+            tooltip: "根据 1080p / 2K / 4K 屏幕分辨率与系统缩放自动补偿字号清晰度，也可手动锁定档位。",
+            type: "combo",
+            defaultValue: "自动适配（1080p / 2K / 4K）",
+            options: [
+                "自动适配（1080p / 2K / 4K）",
+                "1080p 优化（防条纹）",
+                "2K 屏优化（1440p）",
+                "4K 屏优化（2160p）",
+                "关闭自动补偿（100%）",
+            ],
+            onChange,
+        },
+        {
+            id: DISPLAY_SETTINGS.clarity,
+            category: ["Amiaomiao H3 Toolbox", "显示与字体", "文字粗细与防条纹"],
+            name: "文字粗细与防条纹模式",
+            tooltip: "针对 ComfyUI 缩放画布优化字体平滑、字重与次级文字对比度，消除字体发细与条纹感。",
+            type: "combo",
+            defaultValue: "清晰加厚 · 防条纹（推荐）",
+            options: Object.keys(CLARITY_PRESETS),
+            onChange,
+        },
+        {
+            id: DISPLAY_SETTINGS.customFont,
+            category: ["Amiaomiao H3 Toolbox", "显示与字体", "自定义字体名称"],
+            name: "自定义本机字体名称（选填）",
+            tooltip: "当上方「界面字体」选为「自定义字体」时生效，填写任意 Windows/系统已安装字体名（如 HarmonyOS Sans SC、MiSans、LXGW WenKai）。",
+            type: "text",
+            defaultValue: "",
+            onChange,
+        },
+        {
+            id: DISPLAY_SETTINGS.fontFamily,
+            category: ["Amiaomiao H3 Toolbox", "显示与字体", "界面字体"],
+            name: "界面字体",
+            tooltip: "切换 H3 核心节点与项目库弹窗的界面字体。默认优先无衬线清晰黑体，避免缩放画布出现横笔断层。",
+            type: "combo",
+            defaultValue: "清晰黑体（自动推荐）",
+            options: [...Object.keys(FONT_PRESETS), "自定义字体（填下方名称）"],
+            onChange,
+        },
+    ];
+    for (const def of defs) add.call(app.ui.settings, def);
+}
+
+let dpiResizeTimer = 0;
+if (typeof globalThis.addEventListener === "function") {
+    globalThis.addEventListener("resize", () => {
+        clearTimeout(dpiResizeTimer);
+        dpiResizeTimer = setTimeout(() => applyDisplaySettings(), 160);
+    });
+}
+
 function choice(node, key, choices) {
     const value = node?.properties?.[key];
     return typeof value === "string" && Object.hasOwn(choices, value) ? value : DEFAULT[key];
@@ -107,6 +297,14 @@ function paletteGroup(panel, node, key, label, choices) {
 
 app.registerExtension({
     name: "Amiaomiao.H3.UiTheme",
+    init() {
+        registerDisplaySettings();
+        applyDisplaySettings();
+    },
+    setup() {
+        registerDisplaySettings();
+        applyDisplaySettings();
+    },
     beforeRegisterVueAppNodeDefs(definitions) {
         const definition = definitions.find(node => node.name === NODE_TYPE);
         if (definition) {
@@ -117,10 +315,14 @@ app.registerExtension({
     registerCustomNodes() {
         const { LiteGraph, LGraphNode } = globalThis;
         if (!LiteGraph || !LGraphNode) return;
-        const stylesheet = document.createElement("link");
-        stylesheet.rel = "stylesheet";
-        stylesheet.href = new URL("./ui_theme.css", import.meta.url).href;
-        document.head.append(stylesheet);
+        if (!document.getElementById("amiaomiao-h3-ui-theme-style")) {
+            const stylesheet = document.createElement("link");
+            stylesheet.id = "amiaomiao-h3-ui-theme-style";
+            stylesheet.rel = "stylesheet";
+            stylesheet.href = new URL("./ui_theme.css?v=20261127u", import.meta.url).href;
+            document.head.append(stylesheet);
+        }
+        applyDisplaySettings();
 
         class UiThemeNode extends LGraphNode {
             static title = TITLE;

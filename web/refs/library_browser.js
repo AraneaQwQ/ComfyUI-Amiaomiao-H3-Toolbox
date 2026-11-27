@@ -1,5 +1,6 @@
-// Project library browser for the reference hub.
-// Left: project cards (search, sort). Right: the selected project's details and contents.
+// Project library browser shared across「H3 片段选择 v2」「H3 参考素材」「H3 视频裁切/拼接」.
+// Left: project cards (search, sort, create). Right: compact project header + full scrollable
+// content preview with positive/reverse order toggle and 2/3-column density switch.
 // Uses the same backend routes as the old nodes' project menu, so libraries stay shared.
 
 const LIBRARIES = {
@@ -23,6 +24,8 @@ const ROUTES = {
     },
 };
 const SORT_KEY = "amiaomiao.refs.library.sort";
+const CONTENT_ORDER_KEY = "amiaomiao.refs.library.contentOrder";
+const CONTENT_COLS_KEY = "amiaomiao.refs.library.contentCols";
 const DEFAULT_PROJECT = "H3_LVM";
 
 function el(tag, className, text) {
@@ -83,6 +86,12 @@ function readSort() {
         return { field: "updated", dir: "desc" };
     }
 }
+function readContentReversed() {
+    try { return localStorage.getItem(CONTENT_ORDER_KEY) === "reversed"; } catch { return false; }
+}
+function readContentCols() {
+    try { return localStorage.getItem(CONTENT_COLS_KEY) === "3" ? 3 : 2; } catch { return 2; }
+}
 
 // One browser at a time.
 let active = null;
@@ -109,6 +118,8 @@ class LibraryBrowser {
         this.loading = true;
         this.search = "";
         this.sort = readSort();
+        this.contentReversed = readContentReversed();
+        this.contentCols = readContentCols();
         this.mode = "view";          // view | rename | delete
         this.contents = new Map();
         this.build();
@@ -136,7 +147,7 @@ class LibraryBrowser {
         const searchBox = el("label", "ahl-search");
         this.searchInput = el("input");
         this.searchInput.type = "search";
-        this.searchInput.placeholder = "搜索项目";
+        this.searchInput.placeholder = "搜索项目…";
         this.searchInput.setAttribute("aria-label", "搜索项目");
         this.searchInput.addEventListener("input", () => { this.search = this.searchInput.value; this.renderGrid(); });
         searchBox.append(icon("search"), this.searchInput);
@@ -162,17 +173,20 @@ class LibraryBrowser {
         tools.append(searchBox, this.sortGroup, create);
 
         const body = el("div", "ahl-body");
+        const leftPane = el("div", "ahl-left");
         this.grid = el("div", "ahl-grid");
         this.grid.setAttribute("role", "listbox");
         this.grid.setAttribute("aria-label", "项目");
         this.grid.addEventListener("keydown", event => this.onGridKey(event));
-        this.detail = el("aside", "ahl-detail");
         const listPane = el("div", "ahl-list");
         listPane.append(this.createRow, this.grid);
-        body.append(listPane, this.detail);
+        leftPane.append(tools, listPane);
+
+        this.detail = el("aside", "ahl-detail");
+        body.append(leftPane, this.detail);
         this.toastNode = el("div", "ahl-toast");
         this.toastNode.setAttribute("role", "status");
-        dialog.append(head, tools, body, this.toastNode);
+        dialog.append(head, body, this.toastNode);
         this.overlay.append(dialog);
         this.overlay.addEventListener("pointerdown", event => { this.downOnBackdrop = event.target === this.overlay; });
         this.overlay.addEventListener("click", event => {
@@ -277,6 +291,7 @@ class LibraryBrowser {
             image.src = this.url(row.cover_url);
             image.alt = "";
             image.loading = "lazy";
+            image.decoding = "async";
             image.draggable = false;
             image.addEventListener("error", () => { image.remove(); box.append(icon(this.lib.icon)); box.classList.add("is-empty"); });
             box.append(image);
@@ -344,53 +359,120 @@ class LibraryBrowser {
         this.select(next.dataset.name, true);
     }
 
-    // ---------- detail ----------
+    // ---------- detail (Scheme A: Compact Hero Header + Maximized Content Preview) ----------
     selectedRow() {
         return this.projects.find(row => row.name === this.selected)
             || { name: this.selected, [this.lib.field]: 0, cover_url: "", updated_at: "" };
     }
 
+    orderButtonText() {
+        if (this.scope === "clips") return this.contentReversed ? "最早在前" : "最新在前";
+        return this.contentReversed ? "倒序" : "正序";
+    }
+
     renderDetail() {
         const row = this.selectedRow();
         const isCurrent = row.name === this.current;
-        this.detail.replaceChildren();
-        const cover = this.cover(row, "ahl-detail-cover");
-        const titleRow = el("div", "ahl-detail-title");
-        if (this.mode === "rename") {
-            titleRow.append(this.renameForm(row));
-        } else {
-            titleRow.append(el("h3", "", row.name));
-            if (isCurrent) titleRow.append(el("span", "ahl-in-use is-inline", "使用中"));
-        }
-        const facts = el("dl", "ahl-facts");
         const total = this.count(row);
-        const fact = (label, value, title) => {
-            const item = el("div", "ahl-fact");
-            const dd = el("dd", "", value);
-            if (title) dd.title = title;
-            item.append(el("dt", "", label), dd);
-            facts.append(item);
-        };
-        fact("数量", total ? `${total} ${this.lib.unit}` : "空");
-        fact("最后修改", fullTime(row.updated_at) || "—");
+        this.detail.replaceChildren();
+
+        // Compact Project Hero Header
+        const detailHead = el("div", "ahl-detail-head");
+        const heroRow = el("div", "ahl-hero-row");
+        const cover = this.cover(row, "ahl-detail-cover");
+        const titleCol = el("div", "ahl-title-col");
+
+        if (this.mode === "rename") {
+            titleCol.append(this.renameForm(row));
+        } else {
+            const titleLine = el("div", "ahl-detail-title");
+            const h3 = el("h3", "", row.name);
+            h3.title = row.name;
+            titleLine.append(h3);
+            if (isCurrent) titleLine.append(el("span", "ahl-in-use is-inline", "使用中"));
+
+            const metaLine = el("div", "ahl-meta-line");
+            const full = fullTime(row.updated_at);
+            if (full) metaLine.title = `最后修改：${full}`;
+            const countSpan = el("strong", total ? "" : "is-zero", total ? `${total} ${this.lib.unit}` : "空库");
+            metaLine.append(countSpan);
+            if (full) metaLine.append(el("span", "ahl-meta-dot", "·"), el("span", "ahl-meta-time", full));
+            titleCol.append(titleLine, metaLine);
+        }
+        heroRow.append(cover, titleCol);
+
+        const actionBar = el("div", "ahl-action-bar");
         const actions = el("div", "ahl-actions");
         actions.append(...this.primaryButtons(row, isCurrent));
+
         const more = el("div", "ahl-more");
-        const folder = button("打开文件夹", "folder-open", "ahl-btn is-quiet");
+        const folder = button("目录", "folder-open", "ahl-btn is-quiet");
+        folder.title = "在资源管理器中打开文件夹";
         folder.addEventListener("click", () => this.openFolder(row.name, folder));
-        const rename = button("重命名", "pencil", "ahl-btn is-quiet");
+        const rename = button("改名", "pencil", "ahl-btn is-quiet");
+        rename.title = "重命名项目";
         rename.addEventListener("click", () => { this.mode = "rename"; this.renderDetail(); });
-        const remove = button("删除", "trash", "ahl-btn is-quiet is-danger");
+        const remove = button("", "trash", "ahl-icon-btn is-danger");
+        remove.title = "删除项目";
+        remove.setAttribute("aria-label", "删除项目");
         remove.addEventListener("click", () => { this.mode = "delete"; this.renderDetail(); });
         more.append(folder, rename, remove);
+
+        actionBar.append(actions, more);
+        detailHead.append(heroRow, actionBar);
+        if (this.mode === "delete") detailHead.append(this.deleteConfirm(row));
+
+        // Maximized Content Preview Area with Positive / Reverse Sort Toggle
         const contents = el("section", "ahl-contents");
         const contentsHead = el("div", "ahl-section-head");
-        contentsHead.append(el("span", "", "内容"), el("span", "ahl-faint", total ? String(total) : ""));
+        const headLeft = el("div", "ahl-contents-title");
+        headLeft.append(el("span", "ahl-dot"), el("span", "", "内容预览"), el("span", "ahl-contents-num", String(total)));
+
+        const ctrls = el("div", "ahl-contents-ctrls");
+        const orderBtn = el("button", "ahl-order-btn");
+        orderBtn.type = "button";
+        orderBtn.title = "切换内容排列顺序（正序 / 倒序），切换自动记住";
+        const syncOrderBtn = () => {
+            orderBtn.replaceChildren(
+                el("span", "", this.orderButtonText()),
+                icon(this.contentReversed ? "sort-amount-up-alt" : "sort-amount-down")
+            );
+            orderBtn.setAttribute("aria-pressed", String(this.contentReversed));
+        };
+        syncOrderBtn();
+        orderBtn.addEventListener("click", () => {
+            this.contentReversed = !this.contentReversed;
+            try { localStorage.setItem(CONTENT_ORDER_KEY, this.contentReversed ? "reversed" : "default"); } catch { /* optional */ }
+            syncOrderBtn();
+            this.paintContents(row, contentsBody);
+        });
+        ctrls.append(orderBtn);
+
+        if (this.scope !== "audio") {
+            const colSeg = el("div", "ahl-seg is-compact");
+            colSeg.setAttribute("role", "group");
+            colSeg.setAttribute("aria-label", "预览列数");
+            for (const cols of [2, 3]) {
+                const btn = el("button", "ahl-seg-btn", `${cols}列`);
+                btn.type = "button";
+                btn.setAttribute("aria-pressed", String(this.contentCols === cols));
+                btn.addEventListener("click", () => {
+                    if (this.contentCols === cols) return;
+                    this.contentCols = cols;
+                    try { localStorage.setItem(CONTENT_COLS_KEY, String(cols)); } catch { /* optional */ }
+                    for (const child of colSeg.children) child.setAttribute("aria-pressed", String(child === btn));
+                    contentsBody.querySelector(".ahl-thumbs")?.classList.toggle("is-3col", cols === 3);
+                });
+                colSeg.append(btn);
+            }
+            ctrls.append(colSeg);
+        }
+
+        contentsHead.append(headLeft, ctrls);
         const contentsBody = el("div", "ahl-contents-body");
         contents.append(contentsHead, contentsBody);
-        this.detail.append(cover, titleRow, facts, actions);
-        if (this.mode === "delete") this.detail.append(this.deleteConfirm(row));
-        this.detail.append(more, contents);
+
+        this.detail.append(detailHead, contents);
         this.fillContents(row, contentsBody);
     }
 
@@ -430,25 +512,44 @@ class LibraryBrowser {
     async fillContents(row, box) {
         const total = this.count(row);
         if (!total) {
-            box.append(el("p", "ahl-faint", "这个项目还没有内容"));
+            box.replaceChildren(el("div", "ahl-contents-empty", "这个项目还没有内容"));
             return;
         }
-        box.append(el("div", "ahl-contents-loading", "读取中…"));
+        box.replaceChildren(el("div", "ahl-contents-loading", "读取中…"));
         const key = `${this.scope}:${row.name}`;
-        let items;
         try {
             if (!this.contents.has(key)) this.contents.set(key, this.loadContents(row.name));
-            items = await this.contents.get(key);
+            await this.contents.get(key);
         } catch (error) {
             this.contents.delete(key);
+            if (!box.isConnected || this.selected !== row.name) return;
             box.replaceChildren(el("p", "ahl-faint is-error", `读取内容失败：${error.message}`));
             return;
         }
         if (!box.isConnected || this.selected !== row.name) return;
+        this.paintContents(row, box);
+    }
+
+    async paintContents(row, box) {
+        const key = `${this.scope}:${row.name}`;
+        const promise = this.contents.get(key);
+        if (!promise) return;
+        let items;
+        try {
+            items = await promise;
+        } catch {
+            return;
+        }
+        if (!box.isConnected || this.selected !== row.name) return;
+        const ordered = this.contentReversed ? items.slice().reverse() : items;
         box.replaceChildren();
+        if (!ordered.length) {
+            box.append(el("div", "ahl-contents-empty", "这个项目还没有内容"));
+            return;
+        }
         if (this.scope === "audio") {
             const list = el("ul", "ahl-audio-list");
-            for (const item of items) {
+            for (const item of ordered) {
                 const li = el("li", item.skip ? "is-off" : "");
                 li.append(icon("volume-up"), el("span", "ahl-ellipsis", item.label || item.filename));
                 if (item.skip) li.append(el("span", "ahl-tag", "停用"));
@@ -456,39 +557,50 @@ class LibraryBrowser {
                 list.append(li);
             }
             box.append(list);
+            box.scrollTop = 0;
             return;
         }
-        const grid = el("div", "ahl-thumbs");
+        const grid = el("div", `ahl-thumbs${this.contentCols === 3 ? " is-3col" : ""}`);
         const pickable = ["segments", "uploads", "clips"].includes(this.scope) && this.handlers.onPickClip;
-        for (const item of items.slice(0, 24)) {
-            const thumb = el(pickable ? "button" : "div", `ahl-thumb${item.skip ? " is-off" : ""}`);
+        const frag = document.createDocumentFragment();
+        for (const item of ordered) {
+            const card = el(pickable ? "button" : "div", `ahl-thumb${item.skip ? " is-off" : ""}`);
             if (pickable) {
-                thumb.type = "button";
-                thumb.title = this.scope === "clips" ? item.raw?.clip_stage === "draft" ?
-                    `用「${item.title}」做二采` : `接续「${item.title}」` : `用「${item.title}」作为这张视频卡的视频`;
-                thumb.addEventListener("click", () => {
+                card.type = "button";
+                card.title = this.scope === "clips"
+                    ? (item.raw?.clip_stage === "draft" ? `用「${item.title}」做二采` : `接续「${item.title}」`)
+                    : `用「${item.title}」作为这张视频卡的视频`;
+                card.addEventListener("click", () => {
                     this.close();
                     this.handlers.onPickClip(row.name, item.raw);
                 });
             } else {
-                thumb.title = item.title;
+                card.title = item.title;
             }
+            const media = el("div", "ahl-thumb-media");
             if (item.thumb) {
                 const image = el("img");
                 image.src = item.thumb;
                 image.alt = "";
                 image.loading = "lazy";
+                image.decoding = "async";
                 image.draggable = false;
-                thumb.append(image);
+                image.addEventListener("error", () => image.replaceWith(icon(this.lib.icon)));
+                media.append(image);
             } else {
-                thumb.append(icon(this.lib.icon));
+                media.append(icon(this.lib.icon));
             }
-            if (item.caption) thumb.append(el("span", "ahl-thumb-cap", item.caption));
-            if (item.skip) thumb.append(el("span", "ahl-tag is-over", "停用"));
-            grid.append(thumb);
+            if (item.badge) media.append(el("span", "ahl-thumb-stage", item.badge));
+            if (item.duration) media.append(el("span", "ahl-thumb-dur", item.duration));
+            if (item.skip) media.append(el("span", "ahl-tag is-over", "停用"));
+            const cap = el("div", "ahl-thumb-cap");
+            cap.append(el("span", "", item.title || item.caption || ""));
+            card.append(media, cap);
+            frag.append(card);
         }
+        grid.append(frag);
         box.append(grid);
-        if (items.length > 24) box.append(el("p", "ahl-faint", `另有 ${items.length - 24} 项`));
+        box.scrollTop = 0;
     }
 
     async loadContents(name) {
@@ -498,15 +610,24 @@ class LibraryBrowser {
             return (data.clips || []).map(item => {
                 const seconds = Number(item.variants?.["二采"]?.duration_seconds || item.variants?.["一采"]?.duration_seconds
                     || item.duration_seconds) || 0;
-                return { raw: item, title: item.shot_tag || item.clip_id, thumb: item.thumbnail_url ? this.url(item.thumbnail_url) : "",
-                    caption: `${item.shot_tag || ""}${item.clip_stage === "draft" ? " · 一采草稿" : ""}${seconds ? ` · ${seconds.toFixed(1)}s` : ""}` };
+                const title = item.shot_tag || item.clip_id;
+                const badge = item.clip_stage === "draft" ? "一采草稿" : "";
+                const duration = seconds ? `${seconds.toFixed(1)}s` : "";
+                return {
+                    raw: item,
+                    title,
+                    badge,
+                    duration,
+                    thumb: item.thumbnail_url ? this.url(item.thumbnail_url + (item.stage_revision ? `&v=${encodeURIComponent(item.stage_revision)}` : "")) : "",
+                    caption: `${title}${badge ? ` · ${badge}` : ""}${duration ? ` · ${duration}` : ""}`,
+                };
             });
         }
         if (this.scope === "image" || this.scope === "audio") {
             const data = await this.fetchJson(`/amiaomiao_h3/lvm/ref_presets?kind=${this.scope}&project=${project}`);
             return (data.references || []).map(entry => {
                 const query = new URLSearchParams({ filename: entry.filename, subfolder: entry.subfolder || "", type: entry.type || "input" });
-                return { ...entry, title: entry.label || entry.filename,
+                return { ...entry, title: entry.label || entry.filename, duration: "", badge: "",
                     thumb: this.scope === "image" ? this.url(`/amiaomiao_h3/lvm/image_thumbnail?${query}`) : "" };
             });
         }
@@ -514,15 +635,21 @@ class LibraryBrowser {
             const data = await this.fetchJson(`/amiaomiao_h3/lvm/segments?project=${project}`);
             return (data.segments || []).map(item => {
                 const seconds = Number(item.duration_sec) || (item.frames ? item.frames / (item.fps || 24) : 0);
-                return { raw: item, title: item.tag || `#${item.segment_id}`, thumb: item.thumbnail_url ? this.url(item.thumbnail_url) : "",
-                    caption: `#${item.segment_id}${seconds ? ` · ${seconds.toFixed(1)}s` : ""}` };
+                const title = item.tag || `#${item.segment_id}`;
+                const duration = seconds ? `${seconds.toFixed(1)}s` : "";
+                return { raw: item, title, duration, badge: "",
+                    thumb: item.thumbnail_url ? this.url(item.thumbnail_url) : "",
+                    caption: `#${item.segment_id}${duration ? ` · ${duration}` : ""}` };
             });
         }
         const data = await this.fetchJson(`/amiaomiao_h3/lvm/uploads?project=${project}`);
         return (data.videos || []).map(item => {
             const seconds = Number(item.duration_sec) || 0;
-            return { raw: item, title: item.original_name || `#${item.segment_id}`, thumb: item.cover_url ? this.url(item.cover_url) : "",
-                caption: `#${item.segment_id}${seconds ? ` · ${seconds.toFixed(1)}s` : ""}` };
+            const title = item.original_name || `#${item.segment_id}`;
+            const duration = seconds ? `${seconds.toFixed(1)}s` : "";
+            return { raw: item, title, duration, badge: "",
+                thumb: item.cover_url ? this.url(item.cover_url) : "",
+                caption: `#${item.segment_id}${duration ? ` · ${duration}` : ""}` };
         });
     }
 

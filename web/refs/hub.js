@@ -3,11 +3,14 @@ import { api } from "../../../scripts/api.js";
 import { NODE_ID, PROMPT_NODE_ID, SETTINGS_NODE_ID, parseDocument, secondsToLength } from "./refs_state.js";
 import { RefHubPanel, IMAGE_SETTINGS } from "./panel.js";
 import { SettingsPanel } from "./settings_panel.js";
+import { TwoPassSigmasPanel } from "./sigmas_panel.js";
 import { PromptPanel } from "./prompt_panel.js";
 import { ClipPickerPanel, ClipSaverPanel } from "./clip_panel.js";
 import { CLIP_PICKER_ID, CLIP_SAVER_ID, STAGE_PICKER_ID, STAGE_SAVER_ID, STAGE_FIELDS } from "./clip_state.js";
 
 const REF2V_NODE_ID = "AmiaomiaoH3_ReferenceToVideo";
+const SIGMAS_NODE_ID = "AmiaomiaoH3_TwoPassSigmas";
+const SIGMAS_FIELDS = ["scheduler", "first_steps", "second_steps", "extra_steps", "start_at_sigma", "end_at_sigma", "spacing"];
 const MOTION_CONTEXT_NODE_ID = "AmiaomiaoH3_MiniMaxH3MotionContextClipStream";
 const OVERLAP_RESTORE_NODE_ID = "AmiaomiaoH3_MiniMaxH3OverlapRestoreClipStream";
 const CONTEXT_FIELDS = ["context_length", "enable_audio_context", "audio_context_length"];
@@ -34,7 +37,7 @@ if (!document.getElementById("amiaomiao-h3-refs-style")) {
     const link = document.createElement("link");
     link.id = "amiaomiao-h3-refs-style";
     link.rel = "stylesheet";
-    link.href = new URL("./refs.css", import.meta.url).href;
+    link.href = new URL("./refs.css?v=20261127v", import.meta.url).href;
     document.head.append(link);
 }
 
@@ -64,6 +67,7 @@ app.registerExtension({
         if (nodeData.name.startsWith("AmiaomiaoH3_")) normalizeClipboardMetadata(nodeType);
         if (nodeData.name === CLIP_PICKER_ID) nodeData.display_name = "H3 片段选择 v1";
         if (nodeData.name === SETTINGS_NODE_ID) return registerSettingsNode(nodeType);
+        if (nodeData.name === SIGMAS_NODE_ID) return registerTwoPassSigmasNode(nodeType);
         if (nodeData.name === REF2V_NODE_ID) return registerRef2V(nodeType);
         if (nodeData.name === PROMPT_NODE_ID) return registerPromptNode(nodeType);
         if (nodeData.name === CLIP_PICKER_ID || nodeData.name === STAGE_PICKER_ID)
@@ -110,7 +114,7 @@ app.registerExtension({
                 serialize: false, hideOnZoom: false, getMinHeight: () => 420,
             });
             widget.serialize = false;
-            this.size = [Math.max(this.size[0], 820), Math.max(this.size[1], 900)];
+            this.size = [Math.max(this.size[0], 920), Math.max(this.size[1], 800)];
             return result;
         };
         const configure = nodeType.prototype.onConfigure;
@@ -173,7 +177,7 @@ function registerSettingsNode(nodeType) {
             serialize: false, hideOnZoom: false, margin: 10, getMinHeight: () => 360,
         });
         widget.serialize = false;
-        this.size = [Math.max(this.size[0], 470), Math.max(this.size[1], 680)];
+        this.size = [Math.max(this.size[0], 496), Math.max(this.size[1], 710)];
         return result;
     };
     const configure = nodeType.prototype.onConfigure;
@@ -192,6 +196,7 @@ function registerSettingsNode(nodeType) {
     const removed = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function () {
         window.removeEventListener(HUB_CHANGED, this.h3SettingsReferenceRefresh);
+        this.h3Settings?.dispose?.();
         return removed?.apply(this, arguments);
     };
     const executed = nodeType.prototype.onExecuted;
@@ -199,6 +204,81 @@ function registerSettingsNode(nodeType) {
         const result = executed?.apply(this, arguments);
         this.h3Settings?.showResult(message);
         return result;
+    };
+}
+
+function registerTwoPassSigmasNode(nodeType) {
+    const COLLAPSED_MIN = 248;
+    const EXPANDED_MIN = 432;
+    const EXPAND_DELTA = 188;
+
+    const created = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        const result = created?.apply(this, arguments);
+        const widgets = new Map();
+        for (const name of SIGMAS_FIELDS) {
+            const widget = this.widgets?.find(item => item.name === name);
+            if (!widget) return result;
+            widgets.set(name, widget);
+        }
+        for (const widget of widgets.values()) widget.options = { ...widget.options, hidden: true };
+
+        let collapsedHeight = null;
+        const panel = new TwoPassSigmasPanel({
+            get: name => widgets.get(name)?.value,
+            set: (name, value) => {
+                const widget = widgets.get(name);
+                if (!widget) return;
+                widget.value = value;
+                widget.callback?.(value);
+                app.graph?.setDirtyCanvas(true, true);
+            },
+            options: name => {
+                const values = widgets.get(name)?.options?.values;
+                return Array.isArray(values) ? values : [];
+            },
+            isLinked: name => Boolean(this.inputs?.find(port => port.name === name)?.link != null),
+        }, {
+            onToggleAdvanced: open => {
+                if (open) {
+                    collapsedHeight = this.size[1];
+                    this.size = [this.size[0], Math.max(this.size[1] + EXPAND_DELTA, EXPANDED_MIN + 94)];
+                } else if (collapsedHeight != null) {
+                    this.size = [this.size[0], Math.max(COLLAPSED_MIN + 88, collapsedHeight)];
+                    collapsedHeight = null;
+                }
+                app.graph?.setDirtyCanvas(true, true);
+            },
+        });
+
+        this.h3TwoPassSigmas = panel;
+        const domWidget = this.addDOMWidget("h3_two_pass_sigmas", "h3-two-pass-sigmas", panel.root, {
+            serialize: false,
+            hideOnZoom: false,
+            margin: 8,
+            getMinHeight: () => (panel.isExpanded() ? EXPANDED_MIN : COLLAPSED_MIN),
+        });
+        domWidget.serialize = false;
+        this.size = [Math.max(this.size[0], 350), Math.max(this.size[1], 338)];
+        return result;
+    };
+
+    const configure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+        const result = configure?.apply(this, arguments);
+        this.h3TwoPassSigmas?.render();
+        return result;
+    };
+    const connections = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function () {
+        const result = connections?.apply(this, arguments);
+        this.h3TwoPassSigmas?.render();
+        return result;
+    };
+    const removed = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+        this.h3TwoPassSigmas?.dispose?.();
+        return removed?.apply(this, arguments);
     };
 }
 
@@ -318,10 +398,10 @@ function registerPromptNode(nodeType) {
         this.h3PromptRefresh = () => panel.refresh();
         window.addEventListener(HUB_CHANGED, this.h3PromptRefresh);
         const widget = this.addDOMWidget("h3_prompt", "h3-prompt", panel.root, {
-            serialize: false, hideOnZoom: false, getMinHeight: () => 220,
+            serialize: false, hideOnZoom: false, getMinHeight: () => 240,
         });
         widget.serialize = false;
-        this.size = [Math.max(this.size[0], 560), Math.max(this.size[1], 420)];
+        this.size = [Math.max(this.size[0], 720), Math.max(this.size[1], 460)];
         return result;
     };
     const configure = nodeType.prototype.onConfigure;
@@ -425,10 +505,10 @@ function registerClipPicker(nodeType, stageWorkflow) {
         });
         this.h3ClipPicker = panel;
         const widget = this.addDOMWidget("h3_clip_picker", "h3-clip-picker", panel.root, {
-            serialize: false, hideOnZoom: false, getMinHeight: () => 320,
+            serialize: false, hideOnZoom: false, getMinHeight: () => 360,
         });
         widget.serialize = false;
-        this.size = [Math.max(this.size[0], 720), Math.max(this.size[1], 620)];
+        this.size = [Math.max(this.size[0], 880), Math.max(this.size[1], 680)];
         // folder names drop characters other than letters, digits, space, _ and -
         const folder = name => String(name || "").replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "Default_Project";
         this.h3ClipChanged = event => {

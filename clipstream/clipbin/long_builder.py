@@ -20,6 +20,7 @@ Two rules keep the result honest:
   opted out it raises instead of producing a plausible-looking bad film.
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -27,10 +28,12 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from .clip_bin_manager import (
+    existing_project_dir,
     get_project_dir,
     filter_clips_by_kind,
     load_project_index,
@@ -492,6 +495,104 @@ def concat_videos(paths: List[str], output_path: str, mode: str,
             os.remove(list_path)
         except OSError:
             pass
+
+
+_LAST_OUTPUTS: Dict[Tuple[str, str], str] = {}
+_LAST_OUTPUTS_LOCK = threading.Lock()
+
+
+def record_long_video_output(owner: str, fingerprint: Any, output_path: str) -> None:
+    """Remembers the latest generated output path for a content fingerprint so deleting the film invalidates cache."""
+    if not isinstance(fingerprint, str) or not fingerprint or not output_path:
+        return
+    key = (str(owner or ""), fingerprint)
+    with _LAST_OUTPUTS_LOCK:
+        _LAST_OUTPUTS[key] = str(output_path)
+        if len(_LAST_OUTPUTS) > 128:
+            oldest = next(iter(_LAST_OUTPUTS))
+            _LAST_OUTPUTS.pop(oldest, None)
+
+
+def long_video_fingerprint(project_name: str,
+                           exclude_clips: str = "",
+                           clip_order: str = "",
+                           variant_policy: str = VARIANT_PREFER_UP,
+                           join_mode: str = JOIN_AUTO,
+                           fps: float = 24.0,
+                           output_name: str = "",
+                           playback_speed: str = "1.0x",
+                           playback_speed_custom: float = 1.0,
+                           asset_kind: str = "dual",
+                           owner: str = "") -> Any:
+    """Computes a disk-state fingerprint for ComfyUI's execution cache (fingerprint_inputs).
+
+    Invalidates whenever any participating clip is added, deleted, replaced, renamed,
+    reordered, excluded, upgraded between variants, modified on disk, or when the
+    previously generated output MP4 has been removed from disk.
+    """
+    try:
+        p_name = (project_name or "Default_Project").strip()
+        source_speed = parse_playback_speed(playback_speed, playback_speed_custom)
+        output_frame_rate(fps, source_speed)
+        if asset_kind not in ("single", "dual"):
+            return float("nan")
+        project_dir = existing_project_dir(p_name)
+        clips = filter_clips_by_kind(p_name, list_bin_clips(p_name), asset_kind)
+        chain, _warnings = resolve_shot_order(clips, exclude_clips, clip_order)
+        if not chain:
+            return float("nan")
+    except Exception:
+        return float("nan")
+
+    digest = hashlib.sha256()
+    header = {
+        "project": sanitize_project_name(p_name),
+        "asset_kind": asset_kind,
+        "variant_policy": str(variant_policy or ""),
+        "join_mode": str(join_mode or ""),
+        "fps": round(float(fps), 6),
+        "output_name": (output_name or "").strip(),
+        "source_speed": round(float(source_speed), 6),
+        "exclude_clips": str(exclude_clips or ""),
+        "clip_order": str(clip_order or ""),
+        "all_clips": sorted((str(c.get("clip_id") or ""), str(c.get("shot_tag") or "")) for c in clips),
+    }
+    digest.update(json.dumps(header, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+
+    clips_by_id = {c.get("clip_id"): c for c in clips}
+    for clip_id in chain:
+        meta = clips_by_id.get(clip_id, {})
+        variant, video_file, variant_meta = pick_variant(meta, variant_policy)
+        video_path = os.path.join(project_dir, clip_id, video_file) if video_file else ""
+        if video_path and os.path.isfile(video_path):
+            try:
+                stat = os.stat(video_path)
+                file_stamp = [int(stat.st_size), int(stat.st_mtime_ns)]
+            except OSError:
+                return float("nan")
+        else:
+            file_stamp = None
+        entry = [
+            str(clip_id),
+            str(meta.get("shot_tag") or ""),
+            str(meta.get("parent_clip_id") or ""),
+            str(meta.get("created_at") or ""),
+            str(meta.get("stage_completed_at") or ""),
+            str(variant or ""),
+            str(video_file or ""),
+            int(variant_meta.get("frames") or meta.get("frames") or 0),
+            file_stamp,
+        ]
+        digest.update(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
+
+    token = digest.hexdigest()
+    key = (str(owner or ""), token)
+    with _LAST_OUTPUTS_LOCK:
+        previous_output = _LAST_OUTPUTS.get(key)
+        if previous_output and not os.path.isfile(previous_output):
+            _LAST_OUTPUTS.pop(key, None)
+            return float("nan")
+    return token
 
 
 def build_long_video(project_name: str,

@@ -1,5 +1,5 @@
-// Panels for「H3 片段选择 v2」and「H3 片段保存 v2」, built from the「H3 参考素材」components
-// (see UI_GUIDE.md). The picker edits the node's own hidden widgets (project_name, mode,
+// Panels for「H3 片段选择 v2」and「H3 片段保存 v2」.
+// The picker edits the node's own hidden widgets (project_name, mode,
 // clip_selection, passes and continuation settings), so saved workflows keep their values in place.
 import { openLibraryBrowser, relativeTime, fullTime } from "./library_browser.js";
 import { CARD_DENSITIES, normalizeCardDensity } from "./refs_state.js";
@@ -21,7 +21,7 @@ function icon(name) {
     return node;
 }
 function iconButton(name, title, onClick, className = "") {
-    const node = el("button", `ahr-icon-btn ${className}`.trim());
+    const node = el("button", `ahc-icon-btn ${className}`.trim());
     node.type = "button";
     node.title = title;
     node.setAttribute("aria-label", title);
@@ -30,36 +30,28 @@ function iconButton(name, title, onClick, className = "") {
     return node;
 }
 function textButton(label, iconName, onClick, className = "") {
-    const node = el("button", `ahr-btn ${className}`.trim());
+    const node = el("button", `ahc-btn ${className}`.trim());
     node.type = "button";
     if (iconName) node.append(icon(iconName));
     node.append(el("span", "", label));
     node.addEventListener("click", event => { event.stopPropagation(); onClick(event); });
     return node;
 }
-// The reference hub's two-way chooser: icon + bold name + one line of explanation.
-function poolChooser(label, options, value, onPick, className = "") {
-    const group = el("div", `ahr-pool ${className}`.trim());
-    group.setAttribute("role", "radiogroup");
-    group.setAttribute("aria-label", label);
-    for (const [key, name, hint, glyph, tip] of options) {
-        const option = el("button", "ahr-pool-option");
-        option.type = "button";
-        option.setAttribute("role", "radio");
-        option.setAttribute("aria-checked", String(key === value));
-        option.setAttribute("aria-label", name);
-        option.dataset.value = key;
-        if (tip) option.title = tip;
-        const text = el("span", "ahr-pool-text");
-        text.append(el("strong", "", name), el("small", "", hint));
-        option.append(icon(glyph), text);
-        option.addEventListener("click", () => { if (key !== value) onPick(key); });
-        group.append(option);
-    }
-    return group;
-}
 function readDensity() {
     try { return normalizeCardDensity(localStorage.getItem(DENSITY_KEY)); } catch { return "large"; }
+}
+function thumbPlaceholder() {
+    const box = el("div", "ahc-lib-thumb-empty");
+    box.append(icon("video"));
+    return box;
+}
+function eyebrow(label, { right = null, video = false } = {}) {
+    const row = el("div", "ahc-eyebrow");
+    const left = el("span", "ahc-eyebrow-title");
+    left.append(el("span", `ahc-eyebrow-dot${video ? " is-video" : ""}`), el("span", "", label));
+    row.append(left);
+    if (right) row.append(right);
+    return row;
 }
 
 export class ClipPickerPanel {
@@ -73,6 +65,7 @@ export class ClipPickerPanel {
         this.drafts = [];
         this.page = "complete";
         this.projects = null;
+        this.projectRows = new Map();
         this.loading = true;
         this.error = "";
         this.lastRun = null;
@@ -80,15 +73,15 @@ export class ClipPickerPanel {
         this.view = "all";          // all | chain (only the chain the next run continues)
         this.batch = false;         // batch lock / delete mode
         this.marked = new Set();
-        this.root = el("div", "ahr ahc");
+        this.root = el("div", "ahr ahc ahc-picker");
         this.root.tabIndex = -1;
         // one toast for the panel's lifetime, so a re-render does not swallow a message
-        this.status = el("div", "ahr-toast");
+        this.status = el("div", "ahr-toast ahc-toast");
         this.status.setAttribute("role", "status");
         this.request = 0;
         this.root.addEventListener("dblclick", event => {
             const node = event.target.closest?.(".ahc-card[data-clip-id]");
-            if (!node || this.batch || event.target.closest("button, input, .ahr-clear-confirm")) return;
+            if (!node || this.batch || event.target.closest("button, input, .ahr-clear-confirm, .ahc-rerun-confirm")) return;
             const clip = this.cards.find(c => c.clip_id === node.dataset.clipId);
             if (!clip) return;
             const before = this.beforeClick;
@@ -167,8 +160,7 @@ export class ClipPickerPanel {
 
     // Picking a clip always means "continue from this one":
     //  - in 全新段落 it switches back to 接续前段;
-    //  - picking the newest while following keeps following (nothing would change, and silently
-    //    pinning would make the next run branch off once a newer clip is saved);
+    //  - picking the newest while following keeps following;
     //  - anything else pins that clip.
     pick(clip) {
         const following = isLatest(this.selection);
@@ -188,7 +180,7 @@ export class ClipPickerPanel {
         if (this.mode !== MODE_CONTINUE) this.fields.set("mode", MODE_CONTINUE);
         if (on) return this.set("clip_selection", LATEST);
         const newest = this.clips[0];
-        if (newest) this.set("clip_selection", newest.clip_id);  // pin what is newest now
+        if (newest) this.set("clip_selection", newest.clip_id);
         else this.render();
     }
 
@@ -204,6 +196,7 @@ export class ClipPickerPanel {
     async reload({ projects = false, restorePage = false } = {}) {
         const id = ++this.request;
         if (projects) this.projects = null;
+        this.ensureProjects();
         try {
             const data = await this.fetchJson(`/amiaomiao_h3/clip_bin/list?project=${encodeURIComponent(this.project)}&asset_kind=${this.assetKind}`);
             if (id !== this.request) return;
@@ -222,6 +215,69 @@ export class ClipPickerPanel {
         this.render();
     }
 
+    ensureProjects() {
+        if (!this.projects) {
+            const query = this.stageWorkflow ? `?asset_kind=${this.assetKind}` : "";
+            const req = this.fetchJson(`/amiaomiao_h3/clip_bin/projects${query}`);
+            this.projects = req;
+            req.then(data => {
+                if (this.projects !== req) return;
+                this.projectRows = new Map((data.projects || []).filter(r => r?.name).map(r => [r.name, r]));
+                this.syncProjectCardMeta();
+            }).catch(() => {
+                if (this.projects === req) this.projects = null;
+            });
+        }
+        return this.projects;
+    }
+
+    clipThumbUrl(clip) {
+        if (!clip?.thumbnail_url) return "";
+        return this.url(clip.thumbnail_url + (clip.stage_revision ? `&v=${encodeURIComponent(clip.stage_revision)}` : ""));
+    }
+
+    currentProjectVisual() {
+        const meta = this.projectRows.get(this.project);
+        const newest = this.clips[0] || this.drafts[0] || null;
+        const coverUrl = newest ? this.clipThumbUrl(newest) : (meta?.cover_url ? this.url(meta.cover_url) : "");
+        const updatedAt = newest?.created_at || meta?.updated_at || "";
+        return { coverUrl, updatedAt, meta };
+    }
+
+    syncProjectCardMeta() {
+        if (!this.libCardRefs || !this.libCardRefs.card.isConnected) return;
+        const { thumb, metaBox, card } = this.libCardRefs;
+        const { coverUrl, updatedAt } = this.currentProjectVisual();
+        if (coverUrl && thumb.dataset.src !== coverUrl) {
+            thumb.dataset.src = coverUrl;
+            const img = el("img");
+            img.src = coverUrl;
+            img.alt = "";
+            img.draggable = false;
+            img.addEventListener("error", () => {
+                thumb.dataset.src = "";
+                thumb.replaceChildren(thumbPlaceholder());
+            });
+            thumb.replaceChildren(img);
+        } else if (!coverUrl && thumb.dataset.src !== "") {
+            thumb.dataset.src = "";
+            thumb.replaceChildren(thumbPlaceholder());
+        }
+        const full = fullTime(updatedAt);
+        card.title = full
+            ? `点击打开片段项目库（最近更新：${full}）`
+            : "点击打开片段项目库（切换、搜索、新建、重命名或删除）";
+        if (this.loading && !this.clips.length && !this.drafts.length) {
+            const count = Number(this.projectRows.get(this.project)?.clips);
+            if (Number.isFinite(count) && count > 0) {
+                metaBox.classList.remove("is-empty");
+                const when = relativeTime(updatedAt);
+                metaBox.replaceChildren(el("span", "ahc-lib-count", `${count} 片段`));
+                if (when) metaBox.append(el("span", "ahc-lib-dot", "·"), el("span", "ahc-lib-time", when));
+            }
+        }
+    }
+
     showResult(message) {
         const info = message?.h3_clip_v2?.[0];
         if (info) this.lastRun = info;
@@ -233,110 +289,172 @@ export class ClipPickerPanel {
         document.querySelector(".ahc-modal")?._close?.();
     }
 
-    // ---------- layout (same shell as the reference hub) ----------
+    // ---------- layout: Scheme A Studio Split (Soft Luminous + Resize-Proof) ----------
     render() {
-        // never rebuild under a text field being typed in (a focused checkbox is fine)
+        // never rebuild under a text field being typed in (a focused checkbox/radio is fine)
         if (this.root.contains(document.activeElement)
             && document.activeElement.matches?.("input:not([type=checkbox]):not([type=radio]), textarea")) return;
-        const scroll = this.body?.scrollTop || 0;
+        const railTop = this.railScroll?.scrollTop || 0;
+        const stageTop = this.stageScroll?.scrollTop || 0;
         this.root.replaceChildren();
         this.root.dataset.density = this.density;
-        this.body = el("div", "ahr-body");
-        // setup (library + workflow) first, then this run (mode -> plan -> which clip)
-        this.body.append(this.projectBar(), this.flowLine(), this.runSection());
-        this.root.append(this.header(), this.body, this.status);
-        this.body.scrollTop = scroll;
-    }
 
-    header() {
-        const header = el("div", "ahr-header");
-        const title = el("div", "ahr-title");
-        title.append(icon("video"), el("span", "", this.stageWorkflow ? "H3 片段选择 v2" : "H3 片段选择 v1"));
-        const actions = el("div", "ahr-actions");
-        const density = el("div", "ahr-density");
-        density.setAttribute("role", "group");
-        density.setAttribute("aria-label", "卡片尺寸");
-        for (const [value, glyph, label] of CARD_DENSITIES) {
-            const option = iconButton(glyph, label, () => {
-                if (this.density === value) return;
-                this.density = value;
-                try { localStorage.setItem(DENSITY_KEY, value); } catch { /* optional */ }
-                this.root.dataset.density = value;
-                for (const child of density.children) child.setAttribute("aria-pressed", String(child.dataset.value === value));
-            }, "is-seg");
-            option.dataset.value = value;
-            option.setAttribute("aria-pressed", String(this.density === value));
-            density.append(option);
+        const split = el("div", "ahc-split");
+        const rail = el("aside", "ahc-rail");
+        this.railScroll = el("div", "ahc-rail-scroll");
+        this.railScroll.append(this.projectBlock());
+        if (this.refineId) {
+            this.railScroll.append(this.refineBlock());
+        } else {
+            this.railScroll.append(this.modeBlock());
+            const params = this.paramsBlock();
+            if (params) this.railScroll.append(params);
         }
-        actions.append(density);
-        header.append(title, actions);
-        return header;
+        rail.append(this.railScroll, this.planHud());
+
+        const main = el("div", "ahc-main");
+        const visible = this.visibleClips();
+        main.append(this.stageTopbar(visible));
+        const subbar = this.followSubbar();
+        if (subbar) main.append(subbar);
+        this.stageScroll = el("div", "ahc-stage-scroll");
+        if (this.batch) this.stageScroll.append(this.batchBar(visible));
+        this.stageScroll.append(this.clipGrid(visible));
+        main.append(this.stageScroll);
+
+        split.append(rail, main);
+        this.root.append(split, this.status);
+        this.railScroll.scrollTop = railTop;
+        this.stageScroll.scrollTop = stageTop;
     }
 
-    // Same project bar as the image / audio pages: label, dropdown, 浏览, 新建, 刷新.
-    projectBar() {
-        const bar = el("div", "ahr-project-bar is-video");
-        const label = el("span", "ahr-project-label");
-        label.append(icon("folder"), el("span", "", this.stageWorkflow ? (this.dualStage ? "双采项目库" : "单采项目库") : "片段项目库"));
-        const control = el("select", "ahr-select ahr-project-select");
-        control.setAttribute("aria-label", "片段项目库");
-        const current = el("option", "", this.project);
-        current.value = this.project;
-        control.append(current);
-        control.addEventListener("change", () => this.switchProject(control.value));
-        this.fillProjects(control);
-        const browse = textButton("浏览", "folder-open", () => this.openLibrary(), "is-library");
-        browse.title = "打开片段项目库（封面、内容预览、重命名、删除）";
-        browse.setAttribute("aria-label", "打开片段项目库");
-        const create = iconButton("plus", "新建片段项目", () => this.showCreateProject(bar));
-        const refresh = iconButton("refresh", "刷新片段", () => this.reload({ projects: true }));
-        bar.append(label, control, browse, create, refresh);
-        return bar;
-    }
+    // ---------- Left Rail Block 1: Visual Project Card + Flow Switch + Actions ----------
+    projectBlock() {
+        const block = el("div", "ahc-block");
+        const flowSeg = el("div", "ahc-seg");
+        flowSeg.setAttribute("role", "radiogroup");
+        flowSeg.setAttribute("aria-label", "工作流");
+        for (const [value, tip] of [
+            [FLOW_DUAL, "双采样工作流（一采 + 二采放大）：两个接续口都输出，保存一采和二采"],
+            [FLOW_SINGLE, "单采样工作流（只采样一次）：只用一采接续，只保存一采"]]) {
+            const btn = el("button", "", value);
+            btn.type = "button";
+            btn.title = tip;
+            btn.setAttribute("role", "radio");
+            btn.setAttribute("aria-checked", String(this.passes === value));
+            btn.addEventListener("click", () => {
+                if (this.passes === value) return;
+                this.fields.set("passes", value);
+                if (this.stageWorkflow) this.switchProject(this.project);
+                else this.render();
+            });
+            flowSeg.append(btn);
+        }
+        const label = this.stageWorkflow ? (this.dualStage ? "双采项目库" : "单采项目库") : "项目库";
+        block.append(eyebrow(label, { right: flowSeg }));
 
-    async fillProjects(control) {
-        try {
-            if (!this.projects) {
-                this.projects = this.fetchJson(`/amiaomiao_h3/clip_bin/projects?asset_kind=${this.stageWorkflow ? this.assetKind : ""}`);
-                this.projects.catch(() => { this.projects = null; });
+        // Visual Project Library Card Button (thumbnail + name + count/time -> opens library modal)
+        const card = el("button", "ahc-lib-card");
+        card.type = "button";
+        card.setAttribute("aria-label", `切换项目库：${this.project}`);
+        card.addEventListener("click", () => this.openLibrary());
+
+        const { coverUrl, updatedAt } = this.currentProjectVisual();
+        const thumb = el("div", "ahc-lib-thumb");
+        thumb.dataset.src = coverUrl;
+        if (coverUrl) {
+            const img = el("img");
+            img.src = coverUrl;
+            img.alt = "";
+            img.draggable = false;
+            img.addEventListener("error", () => {
+                thumb.dataset.src = "";
+                thumb.replaceChildren(thumbPlaceholder());
+            });
+            thumb.append(img);
+        } else {
+            thumb.append(thumbPlaceholder());
+        }
+
+        const info = el("div", "ahc-lib-info");
+        info.append(el("strong", "ahc-lib-name", this.project));
+        const metaBox = el("div", "ahc-lib-meta");
+        const clipCount = this.clips.length;
+        const draftCount = this.drafts.length;
+        if (this.loading && !clipCount && !draftCount) {
+            metaBox.append(el("span", "ahc-lib-time", "读取中…"));
+        } else if (clipCount || draftCount) {
+            if (this.dualStage && draftCount) {
+                metaBox.append(
+                    el("span", "ahc-lib-count", `${clipCount} 成片`),
+                    el("span", "ahc-lib-dot", "·"),
+                    el("span", "ahc-lib-time", `${draftCount} 草稿`)
+                );
+            } else {
+                const when = relativeTime(updatedAt);
+                metaBox.append(el("span", "ahc-lib-count", `${clipCount} 片段`));
+                if (when) metaBox.append(el("span", "ahc-lib-dot", "·"), el("span", "ahc-lib-time", when));
             }
-            const data = await this.projects;
-            const rows = [...(data.projects || [])];
-            if (!rows.some(row => row.name === this.project)) rows.push({ name: this.project, clips: null });
-            rows.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
-            control.replaceChildren(...rows.map(row => {
-                const option = el("option", "", row.clips == null ? row.name : `${row.name}（${row.clips}）`);
-                option.value = row.name;
-                return option;
-            }));
-            control.value = this.project;
-        } catch {
-            // keep the single current option
+        } else {
+            metaBox.classList.add("is-empty");
+            metaBox.append(el("span", "ahc-lib-count", "空库"), el("span", "ahc-lib-dot", "·"), el("span", "ahc-lib-time", "暂无片段"));
         }
+        info.append(metaBox);
+
+        const chev = el("span", "ahc-lib-chevron");
+        chev.setAttribute("aria-hidden", "true");
+        chev.append(icon("chevron-down"));
+        card.append(thumb, info, chev);
+        const full = fullTime(updatedAt);
+        card.title = full
+            ? `点击打开片段项目库（最近更新：${full}）`
+            : "点击打开片段项目库（切换、搜索、新建、重命名或删除）";
+        this.libCardRefs = { card, thumb, metaBox };
+        this.ensureProjects();
+        block.append(card);
+
+        // Action row directly underneath project card
+        const actionsWrap = el("div", "ahc-lib-actions-wrap");
+        const actions = el("div", "ahc-lib-actions");
+        const browse = textButton("浏览库", "folder-open", () => this.openLibrary());
+        browse.title = "打开片段项目库（封面、内容预览、重命名、删除）";
+        const create = textButton("新建", "plus", () => this.showCreateProject(actionsWrap));
+        create.title = "新建片段项目";
+        const refresh = iconButton("refresh", "刷新片段", () => this.reload({ projects: true }));
+        actions.append(browse, create, refresh);
+        actionsWrap.append(actions);
+        block.append(actionsWrap);
+
+        return block;
     }
 
-    // Inline create, exactly like the reference hub: the bar turns into a name field.
-    showCreateProject(bar) {
-        if (bar.classList.contains("is-creating")) return bar.querySelector(".ahr-create-input")?.focus();
-        const saved = [...bar.children];
-        const form = el("form", "ahr-create-form");
-        const input = el("input", "ahr-name ahr-create-input");
-        input.placeholder = "新片段项目名称";
+    // Inline create inside the left rail action bar: Enter submits, Esc cancels.
+    showCreateProject(container) {
+        if (container.classList.contains("is-creating")) return container.querySelector(".ahc-create-input")?.focus();
+        const saved = [...container.children];
+        const form = el("form", "ahc-create-form");
+        const input = el("input", "ahc-create-input");
+        input.placeholder = "新项目名称…";
         input.maxLength = 80;
         input.setAttribute("aria-label", "新片段项目名称");
-        const confirm = textButton("建立", "check", () => {}, "is-confirm");
+        const confirm = textButton("建立", "", () => {}, "is-solid");
         confirm.type = "submit";
         confirm.disabled = true;
-        const error = el("span", "ahr-create-error");
+        const error = el("div", "ahc-create-error");
+        error.hidden = true;
         const restore = () => {
-            bar.classList.remove("is-creating");
-            bar.replaceChildren(...saved);
-            bar.querySelector(".ahr-icon-btn[aria-label^='新建']")?.focus();
+            container.classList.remove("is-creating");
+            container.replaceChildren(...saved);
         };
-        const cancel = textButton("取消", "", () => restore());
-        input.addEventListener("input", () => { confirm.disabled = !input.value.trim(); error.textContent = ""; });
+        const cancel = iconButton("times", "取消新建", () => restore());
+        input.addEventListener("input", () => {
+            confirm.disabled = !input.value.trim();
+            error.textContent = "";
+            error.hidden = true;
+        });
         input.addEventListener("keydown", event => {
-            if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); restore(); }
+            event.stopPropagation();
+            if (event.key === "Escape") { event.preventDefault(); restore(); }
         });
         form.addEventListener("submit", async event => {
             event.preventDefault();
@@ -351,240 +469,340 @@ export class ClipPickerPanel {
                 this.toast(`已新建片段项目「${data.name || typed}」`);
             } catch (err) {
                 error.textContent = err.message;
+                error.hidden = false;
                 confirm.disabled = false;
                 input.focus();
             }
         });
-        const label = el("span", "ahr-project-label");
-        label.append(icon("plus"), el("span", "", "新建片段项目"));
         form.append(input, confirm, cancel);
-        bar.classList.add("is-creating");
-        bar.replaceChildren(label, form, error);
+        container.classList.add("is-creating");
+        container.replaceChildren(form, error);
         input.focus();
     }
 
-    // A setting of the node, chosen once for the workflow it sits in: a quiet one-line toggle
-    // (the generation settings' text segment), visually below the library it belongs with.
-    flowLine() {
-        const line = el("div", "ahc-flow");
-        const label = el("span", "ahc-flow-label");
-        label.append(icon("sitemap"), el("span", "", "工作流"));
-        const group = el("div", "ahs-seg");
+    // ---------- Left Rail Block 2: Generation Mode Cards ----------
+    modeBlock() {
+        const block = el("div", "ahc-block");
+        block.append(eyebrow("生成模式"));
+        const group = el("div", "ahc-mode-grid");
         group.setAttribute("role", "radiogroup");
-        group.setAttribute("aria-label", "工作流");
-        for (const [value, tip] of [
-            [FLOW_DUAL, "双采样工作流（一采 + 二采放大，如万物皆可接续）：两个接续口都输出，保存一采和二采"],
-            [FLOW_SINGLE, "单采样工作流（只采样一次）：只用一采接续，只保存一采"]]) {
-            const button = el("button", "", value);
-            button.type = "button";
-            button.title = tip;
-            button.setAttribute("role", "radio");
-            button.setAttribute("aria-checked", String(this.passes === value));
-            button.addEventListener("click", () => {
-                if (this.passes === value) return;
-                this.fields.set("passes", value);
-                if (this.stageWorkflow) this.switchProject(this.project);
-                else this.render();
-            });
-            group.append(button);
+        group.setAttribute("aria-label", "模式");
+        const target = this.target();
+        const contSub = this.loading ? "读取片段中…"
+            : !this.clips.length ? "项目为空时将自动从头生成"
+            : isLatest(this.selection) ? `跟随最新 · ${shotLabel(this.clips[0])}`
+            : target ? `已固定 · ${shotLabel(target)}`
+            : "固定接续的片段已不在项目里";
+        for (const [value, title, sub, tip] of [
+            [MODE_CONTINUE, "接续前段", contSub, "接着选中的片段（默认最新）往下生成；库是空的时自动按全新段落"],
+            [MODE_NEW, "全新段落", "断开上下文，从头起新镜", "不接任何片段，从头生成"],
+        ]) {
+            const card = el("button", "ahc-mode-card");
+            card.type = "button";
+            card.title = tip;
+            card.setAttribute("role", "radio");
+            card.setAttribute("aria-checked", String(this.mode === value));
+            const top = el("div", "ahc-mode-card-top");
+            top.append(el("strong", "", title), el("span", "ahc-mode-radio"));
+            card.append(top, el("small", "", sub));
+            card.addEventListener("click", () => { if (this.mode !== value) this.set("mode", value); });
+            group.append(card);
         }
-        const note = el("span", "ahc-flow-note", this.passes === FLOW_DUAL ? "一采 + 二采放大的工作流" : "只采样一次的工作流");
-        line.append(label, group, note);
-        return line;
+        block.append(group);
+        return block;
     }
 
-    contextLine() {
-        if (this.fields.get("context_length") == null) return document.createDocumentFragment();
-        const { video_frames, audio, audio_frames } = this.context;
-        const row = el("fieldset", "ahc-context");
-        row.disabled = this.mode !== MODE_CONTINUE;
-        const video = el("div", "ahc-context-field");
-        const label = el("span", "", "画面重叠");
-        label.title = "沿用上一段结尾的画面帧数。Motion Context 接入「接续信息」后使用此设置。";
-        const frames = el("div", "ahs-seg");
-        frames.setAttribute("role", "group");
-        frames.setAttribute("aria-label", "画面重叠");
-        for (const value of CONTEXT_LENGTHS) {
-            const button = el("button", "", value);
-            button.type = "button";
-            button.title = `${value} 帧 · ${(Number(value) / 24).toFixed(2)} 秒`;
-            button.setAttribute("aria-pressed", String(video_frames === Number(value)));
-            button.addEventListener("click", () => {
-                this.fields.set("context_length", value);
-                for (const item of frames.children) item.setAttribute("aria-pressed", String(item === button));
-            });
-            frames.append(button);
-        }
-        video.append(label, frames, el("span", "", "帧"));
-
-        const sound = el("div", "ahc-context-field");
-        const toggle = el("label", "ahr-toggle");
-        toggle.title = "带入上一段结尾的声音。关闭不影响画面接续。";
-        const check = el("input");
-        check.type = "checkbox";
-        check.checked = audio;
-        toggle.append(check, el("span", "ahr-switch"), el("span", "", "声音接续"));
-        const length = el("input", "ahr-number");
-        Object.assign(length, { type: "number", min: 0, max: AUDIO_LENGTH_MAX, step: 1, value: audio_frames, disabled: !audio });
-        length.setAttribute("aria-label", "声音接续帧数");
-        length.title = "按视频帧计。填 0 时与画面重叠帧数相同。";
-        check.addEventListener("change", () => {
-            this.fields.set("enable_audio_context", check.checked);
-            length.disabled = !check.checked;
-        });
-        length.addEventListener("change", () => {
-            const value = normalizeContext(undefined, undefined, length.value).audio_frames;
-            length.value = String(value);
-            this.fields.set("audio_context_length", value);
-        });
-        sound.append(toggle, length, el("span", "", "帧"));
-        row.append(el("legend", "", "接续设置"), video, sound);
-        return row;
-    }
-
-    // This run: the mode decides whether the clip grid matters at all, so they sit together.
-    runSection() {
-        const section = el("section", "ahr-section is-video ahc-run");
-        const head = el("div", "ahr-section-head");
-        const name = el("h3", "ahr-section-title");
-        name.append(el("span", "ahr-kind-dot"), el("span", "", "本次运行"));
-        head.append(name);
-        section.append(head);
-        if (!this.refineId) section.append(poolChooser("模式", [
-            [MODE_CONTINUE, "接续前段", "接着下面选中的片段生成", "link", "接着选中的片段（默认最新）往下生成；库是空的时自动按全新段落"],
-            [MODE_NEW, "全新段落", "不接任何片段，从头生成", "plus-circle", "不接任何片段，从头生成"],
-        ], this.mode, value => this.set("mode", value), "is-mode"));
-        if (this.dualStage && !this.refineId) section.append(this.stageLine());
-        if (!this.refineId) section.append(this.contextLine());
-        section.append(this.planLine(), this.clipGrid());
-        return section;
-    }
-
-    stageLine() {
-        const line = el("div", "ahc-flow ahc-stage-line");
-        const group = el("div", "ahs-seg");
-        group.setAttribute("role", "group");
-        group.setAttribute("aria-label", "采样阶段");
-        for (const [label, draft] of [["一采＋二采", false], ["只跑一采", true]]) {
-            const button = textButton(label, "", () => this.set("draft_only", draft));
-            button.className = "";
-            button.setAttribute("aria-pressed", String(Boolean(this.fields.get("draft_only")) === draft));
-            group.append(button);
-        }
-        line.append(el("span", "ahc-flow-label", "采样阶段"), group);
-        return line;
-    }
-
-    planLine() {
+    // ---------- Left Rail Refine Mode Card (replaces Mode + Params while refining) ----------
+    refineBlock() {
+        const block = el("div", "ahc-block");
+        block.append(eyebrow("仅跑二采模式", { video: true }));
         const selected = this.cards.find(c => c.clip_id === this.refineId && c.stage_revision === this.fields.get("refine_revision"));
-        const plan = this.loading ? { text: "读取片段…", tone: "continue" }
-            : this.refineId ? selected ? { text: `仅跑二采 · ${shotLabel(selected)}`, tone: "continue" }
-                : { text: "选中的卡片已变更，请重新选卡", tone: "error" }
-            : plannedStatus({ project: this.project, mode: this.mode, passes: this.passes, clips: this.clips, selection: this.selection });
-        const line = el("div", `ahc-plan is-${plan.tone}`);
-        line.setAttribute("role", "status");
-        const glyph = { new: "plus-circle", continue: "link", warn: "exclamation-triangle", error: "times-circle" }[plan.tone];
-        const head = el("div", "ahc-plan-main");
-        if (!this.refineId && this.dualStage && this.fields.get("draft_only") && plan.tone !== "error" && !this.loading) {
-            plan.text = `${plan.text} · 只跑一采，保存为草稿`;
+        const card = el("div", "ahc-refine-card");
+        const top = el("div", "ahc-refine-top");
+        const thumbUrl = this.clipThumbUrl(selected);
+        if (thumbUrl) {
+            const thumb = el("div", "ahc-refine-thumb");
+            const img = el("img");
+            img.src = thumbUrl;
+            img.alt = "";
+            img.draggable = false;
+            img.addEventListener("error", () => thumb.remove());
+            thumb.append(img);
+            top.append(thumb);
         }
-        head.append(icon(glyph || "link"), el("span", "ahc-plan-label", "下次运行"), el("span", "", plan.text));
-        if (this.refineId) {
-            const cancel = textButton("取消", "", () => { this.clearRefine(); this.render(); }, "is-quiet ahc-stage-cancel");
-            head.append(cancel);
-        }
-        line.append(head);
+        const meta = el("div", "ahc-refine-meta");
+        meta.append(el("strong", "", selected ? shotLabel(selected) : "选中的卡片已变更"));
+        let note = "请重新选卡或退出仅二采";
         if (selected) {
             const parent = this.clips.find(c => c.clip_id === selected.parent_clip_id);
             const size = parent && resolutionOf(parent);
-            if (parent) line.append(el("div", "ahc-plan-note", `接自 ${shotLabel(parent)}${size ? ` · 二采需 ${size}` : ""}`));
-            else if (selected.parent_clip_id && selected.parent_clip_id !== "[INITIAL]")
-                line.append(el("div", "ahc-plan-note", "找不到原接续片段"));
+            if (parent) note = `接自 ${shotLabel(parent)}${size ? ` · 二采需 ${size}` : ""}`;
+            else if (selected.parent_clip_id && selected.parent_clip_id !== "[INITIAL]") note = "找不到原接续片段";
+            else note = "首段草稿补二采";
         }
+        meta.append(el("small", "", note));
+        top.append(meta);
+        const cancel = textButton("退出仅二采，恢复常规生成", "times", () => { this.clearRefine(); this.render(); }, "is-full");
+        card.append(top, cancel);
+        block.append(card);
+        return block;
+    }
+
+    // ---------- Left Rail Block 3: Sampling & Continuation Params (1px hairline card) ----------
+    paramsBlock() {
+        const hasContext = this.fields.get("context_length") != null;
+        if (!this.dualStage && !hasContext) return null;
+        const block = el("div", "ahc-block");
+        block.append(eyebrow(this.dualStage ? "采样与接续参数" : "接续参数"));
+        const box = el("div", "ahc-params-box");
+
+        if (this.dualStage) {
+            const row = el("div", "ahc-param-row");
+            row.append(el("span", "ahc-param-lbl", "采样阶段"));
+            const seg = el("div", "ahc-seg");
+            seg.setAttribute("role", "group");
+            seg.setAttribute("aria-label", "采样阶段");
+            for (const [label, draft] of [["一+二采", false], ["只一采", true]]) {
+                const btn = el("button", "", label);
+                btn.type = "button";
+                btn.title = draft ? "只跑一采并保存为一采草稿" : "完整执行一采与二采放大";
+                btn.setAttribute("aria-pressed", String(Boolean(this.fields.get("draft_only")) === draft));
+                btn.addEventListener("click", () => this.set("draft_only", draft));
+                seg.append(btn);
+            }
+            row.append(seg);
+            box.append(row);
+        }
+
+        if (hasContext) {
+            const { video_frames, audio, audio_frames } = this.context;
+            const disabled = this.mode !== MODE_CONTINUE;
+
+            const rOverlap = el("div", `ahc-param-row${disabled ? " is-dim" : ""}`);
+            const lbl = el("span", "ahc-param-lbl", "画面重叠");
+            lbl.title = "沿用上一段结尾的画面帧数。Motion Context 接入「接续信息」后使用此设置。";
+            const frames = el("div", "ahc-seg is-compact");
+            frames.setAttribute("role", "group");
+            frames.setAttribute("aria-label", "画面重叠");
+            for (const value of CONTEXT_LENGTHS) {
+                const btn = el("button", "", value);
+                btn.type = "button";
+                btn.disabled = disabled;
+                btn.title = `${value} 帧 · ${(Number(value) / 24).toFixed(2)} 秒`;
+                btn.setAttribute("aria-pressed", String(video_frames === Number(value)));
+                btn.addEventListener("click", () => {
+                    this.fields.set("context_length", value);
+                    for (const item of frames.children) item.setAttribute("aria-pressed", String(item === btn));
+                });
+                frames.append(btn);
+            }
+            rOverlap.append(lbl, frames);
+            box.append(rOverlap);
+
+            const rAudio = el("div", `ahc-param-row${disabled ? " is-dim" : ""}`);
+            const toggle = el("label", "ahc-toggle");
+            toggle.title = "带入上一段结尾的声音。关闭不影响画面接续。";
+            const check = el("input");
+            check.type = "checkbox";
+            check.checked = audio;
+            check.disabled = disabled;
+            toggle.append(check, el("span", "ahc-switch"), el("span", "", "声音接续"));
+
+            const field = el("label", `ahc-unit-field${disabled || !audio ? " is-disabled" : ""}`);
+            const length = el("input");
+            Object.assign(length, { type: "number", min: 0, max: AUDIO_LENGTH_MAX, step: 1, value: audio_frames, disabled: disabled || !audio });
+            length.setAttribute("aria-label", "声音接续帧数");
+            length.title = "按视频帧计。填 0 时与画面重叠帧数相同。";
+            field.append(length, el("span", "", "帧"));
+
+            check.addEventListener("change", () => {
+                this.fields.set("enable_audio_context", check.checked);
+                length.disabled = disabled || !check.checked;
+                field.classList.toggle("is-disabled", length.disabled);
+            });
+            length.addEventListener("change", () => {
+                const value = normalizeContext(undefined, undefined, length.value).audio_frames;
+                length.value = String(value);
+                this.fields.set("audio_context_length", value);
+            });
+
+            rAudio.append(toggle, field);
+            box.append(rAudio);
+        }
+
+        block.append(box);
+        return block;
+    }
+
+    // ---------- Left Rail Bottom HUD: Next Run Plan ----------
+    planHud() {
+        const selected = this.cards.find(c => c.clip_id === this.refineId && c.stage_revision === this.fields.get("refine_revision"));
+        const plan = this.loading ? { text: "读取片段…", tone: "continue" }
+            : this.refineId ? selected ? { text: `仅跑二采 · ${shotLabel(selected)}`, tone: "refine" }
+                : { text: "选中的卡片已变更，请重新选卡", tone: "error" }
+            : plannedStatus({ project: this.project, mode: this.mode, passes: this.passes, clips: this.clips, selection: this.selection });
+
+        let mainText = plan.text;
+        if (!this.refineId && this.dualStage && this.fields.get("draft_only") && plan.tone !== "error" && !this.loading) {
+            mainText = `${mainText} · 只跑一采存草稿`;
+        }
+
         const newest = this.clips[0];
         const pinned = !this.refineId && !this.loading && this.mode === MODE_CONTINUE && !isLatest(this.selection) ? this.target() : null;
-        if (pinned && newest && pinned !== newest) {
-            line.classList.add("is-pinned-old");
-            line.append(el("div", "ahc-plan-note", `已固定 ${shotLabel(pinned)}，不是最新的 ${shotLabel(newest)}，会从这里分出新的一支`));
+        const isPinnedOld = Boolean(pinned && newest && pinned !== newest);
+        const tone = isPinnedOld && plan.tone === "continue" ? "warn" : plan.tone;
+
+        const hud = el("div", `ahc-hud is-${tone}`);
+        hud.setAttribute("role", "status");
+        const head = el("div", "ahc-hud-head");
+        head.append(el("span", `ahc-status-dot is-${tone}`), el("span", "", "下次运行确认"));
+        hud.append(head, el("div", "ahc-hud-main", mainText));
+
+        if (selected) {
+            const parent = this.clips.find(c => c.clip_id === selected.parent_clip_id);
+            const size = parent && resolutionOf(parent);
+            if (parent) hud.append(el("div", "ahc-hud-sub", `接自 ${shotLabel(parent)}${size ? ` · 二采需 ${size}` : ""}`));
+            else if (selected.parent_clip_id && selected.parent_clip_id !== "[INITIAL]") {
+                hud.append(el("div", "ahc-hud-sub is-warn", "找不到原接续片段"));
+            }
+        } else if (isPinnedOld) {
+            hud.append(el("div", "ahc-hud-sub is-warn", `已固定旧片段 ${shotLabel(pinned)}（非最新 ${shotLabel(newest)}），将从此分出新支`));
+        } else if (!this.refineId && !this.loading && this.mode === MODE_CONTINUE && !plan.missing && this.clips.length) {
+            hud.append(el("div", "ahc-hud-sub", isLatest(this.selection) ? "跟随最新 · 出新成片后自动顺延" : "已固定该镜头作为接续源"));
         }
-        if (plan.missing) {
-            const fix = textButton("改回跟随最新", "history", () => { this.setFollow(true); this.toast("已改回跟随最新"); }, "is-confirm ahc-plan-fix");
-            line.append(fix);
+
+        if (plan.missing || isPinnedOld) {
+            const fix = textButton("改回跟随最新", "history", () => {
+                this.setFollow(true);
+                this.toast("已改回跟随最新");
+            }, "ahc-hud-fix");
+            hud.append(fix);
         }
-        if (this.lastRun?.status && !this.loading) line.append(el("div", "ahc-plan-last", `上次运行：${this.lastRun.status}`));
-        return line;
+        if (this.lastRun?.status && !this.loading) {
+            hud.append(el("div", "ahc-hud-last", `上次运行：${this.lastRun.status}`));
+        }
+        return hud;
     }
 
     visibleClips() {
         if (this.draftPage) return this.drafts;
         if (this.view !== "chain") return this.clips;
-        const chain = chainOf(this.clips, this.target());
-        return chain;
+        return chainOf(this.clips, this.target());
     }
 
-    clipGrid() {
-        const wrap = el("div", "ahc-clips");
+    // ---------- Right Stage Topbar: Underline Tabs + View/Batch/Density ----------
+    stageTopbar(visible) {
+        const bar = el("div", "ahc-stage-topbar");
         if (this.dualStage) {
-            const tabs = el("div", "ahr-tabs ahc-stage-tabs");
-            tabs.setAttribute("role", "group");
+            const tabs = el("div", "ahc-utabs");
+            tabs.setAttribute("role", "tablist");
             tabs.setAttribute("aria-label", "片段库");
-            for (const [page, label] of [["draft", "一采草稿"], ["complete", "二采成片"]]) {
-                const tab = textButton(label, "", () => this.openPage(page), "ahc-stage-tab");
-                tab.setAttribute("aria-pressed", String(this.page === page));
+            for (const [page, label, count, cls] of [
+                ["complete", "二采成片", this.clips.length, ""],
+                ["draft", "一采草稿", this.drafts.length, "is-draft"],
+            ]) {
+                const tab = el("button", `ahc-utab ${cls}`.trim());
+                tab.type = "button";
+                tab.setAttribute("role", "tab");
+                tab.setAttribute("aria-selected", String(this.page === page));
+                tab.append(el("span", "", label), el("span", "ahc-utab-num", this.loading ? "…" : String(count)));
+                tab.addEventListener("click", () => this.openPage(page));
                 tabs.append(tab);
             }
-            wrap.append(tabs);
+            bar.append(tabs);
+        } else {
+            const title = el("div", "ahc-stage-title");
+            const countText = this.loading ? "…" : this.view === "chain" ? `${visible.length} / ${this.clips.length}` : String(this.clips.length);
+            title.append(el("strong", "", this.stageWorkflow ? "单采片段" : "接续片段"), el("span", "ahc-utab-num", countText));
+            bar.append(title);
         }
-        const head = el("div", "ahc-clips-head");
-        if (!this.draftPage && !this.refineId) head.append(this.followSwitch());
-        const visible = this.visibleClips();
-        const title = el("span", "ahc-clips-title", this.mode === MODE_NEW ? "接续片段（全新段落时不使用）" : "接续片段");
-        title.append(el("span", "ahr-zone-count", this.loading ? ""
-            : this.view === "chain" ? `${visible.length} / ${this.clips.length} 个` : `${this.clips.length} 个`));
-        if (!this.draftPage && !this.dualStage) head.append(title);
-        const tools = el("div", "ahc-clips-tools");
-        const view = el("div", "ahs-seg");
-        view.setAttribute("role", "radiogroup");
-        view.setAttribute("aria-label", "显示");
-        for (const [value, label, tip] of [["all", "全部", "显示项目里的全部片段"],
-            ["chain", "接续链", "只显示下次运行要接的这一支：所选片段、它接自的片段……一直往前"]]) {
-            const option = el("button", "", label);
-            option.type = "button";
-            option.title = tip;
-            option.setAttribute("role", "radio");
-            option.setAttribute("aria-checked", String(this.view === value));
-            option.disabled = value === "chain" && !this.target();
-            option.addEventListener("click", () => { if (this.view !== value) { this.view = value; this.render(); } });
-            view.append(option);
+
+        const tools = el("div", "ahc-stage-tools");
+        if (!this.draftPage) {
+            const view = el("div", "ahc-seg");
+            view.setAttribute("role", "radiogroup");
+            view.setAttribute("aria-label", "显示");
+            for (const [value, label, tip] of [
+                ["all", "全部", "显示项目里的全部片段"],
+                ["chain", "接续链", "只显示下次运行要接的这一支：所选片段、它接自的片段……一直往前"],
+            ]) {
+                const option = el("button", "", label);
+                option.type = "button";
+                option.title = tip;
+                option.setAttribute("role", "radio");
+                option.setAttribute("aria-checked", String(this.view === value));
+                option.disabled = value === "chain" && !this.target();
+                option.addEventListener("click", () => { if (this.view !== value) { this.view = value; this.render(); } });
+                view.append(option);
+            }
+            tools.append(view);
         }
+
         const batch = textButton(this.batch ? "完成" : "批量", this.batch ? "check" : "check-square",
-            () => { this.batch = !this.batch; this.marked.clear(); this.render(); }, this.batch ? "is-confirm" : "is-quiet");
+            () => { this.batch = !this.batch; this.marked.clear(); this.render(); }, this.batch ? "is-active" : "");
         batch.title = this.batch ? "退出批量选择" : "批量锁定、解锁或删除片段";
         batch.setAttribute("aria-pressed", String(this.batch));
         batch.disabled = !visible.length;
-        if (!this.draftPage) tools.append(view);
         tools.append(batch);
-        head.append(tools);
-        wrap.append(head);
-        if (this.batch) wrap.append(this.batchBar(visible));
-        const grid = el("div", `ahc-grid${this.draftPage ? " is-drafts" : this.mode === MODE_NEW ? " is-idle" : ""}`);
-        grid.setAttribute("role", "listbox");
-        grid.setAttribute("aria-label", this.draftPage ? "一采草稿" : this.dualStage ? "二采成片" : "接续片段");
-        if (this.error) {
-            grid.append(this.empty("exclamation-triangle", `读取失败：${this.error}`, true));
-        } else {
-            for (const clip of visible) grid.append(this.card(clip));
-            if (!this.loading && this.draftPage && !visible.length) grid.append(this.empty("inbox", "暂无一采草稿"));
-            else if (!this.loading && !this.clips.length && !this.draftPage)
-                grid.append(this.empty("inbox", this.dualStage ? "暂无二采成片" : "这个项目还没有片段"));
-            else if (!this.loading && !visible.length) grid.append(this.empty("share-alt", "没有可显示的接续链"));
+
+        const density = el("div", "ahc-seg");
+        density.setAttribute("role", "group");
+        density.setAttribute("aria-label", "卡片尺寸");
+        for (const [value, , label] of CARD_DENSITIES) {
+            const option = el("button", "", label.replace("卡片", ""));
+            option.type = "button";
+            option.title = label;
+            option.setAttribute("aria-label", label);
+            option.dataset.densityOption = value;
+            option.setAttribute("aria-pressed", String(this.density === value));
+            option.addEventListener("click", () => {
+                if (this.density === value) return;
+                this.density = value;
+                try { localStorage.setItem(DENSITY_KEY, value); } catch { /* optional */ }
+                this.root.dataset.density = value;
+                for (const child of density.children) child.setAttribute("aria-pressed", String(child.dataset.densityOption === value));
+            });
+            density.append(option);
         }
-        wrap.append(grid);
-        return wrap;
+        tools.append(density);
+
+        bar.append(tools);
+        return bar;
+    }
+
+    // ---------- Right Stage Subbar: Compact Follow Latest Toggle ----------
+    followSubbar() {
+        if (this.draftPage || this.refineId) return null;
+        const follow = isLatest(this.selection);
+        const newest = this.clips[0];
+        const pinned = follow ? null : this.clips.find(c => c.clip_id === this.selection);
+        const bar = el("div", `ahc-stage-subbar${this.mode === MODE_NEW ? " is-idle" : ""}`);
+
+        const box = el("label", "ahc-toggle");
+        box.title = follow ? "开着：每次运行都接最新的片段，存了新片段会自动换。点任意卡片可固定接那一段。"
+            : "关着：固定接选中的那一段。打开则改回每次接最新。";
+        const input = el("input");
+        input.type = "checkbox";
+        input.checked = follow;
+        input.setAttribute("aria-label", "跟随最新");
+        input.addEventListener("change", () => this.setFollow(input.checked));
+        box.append(input, el("span", "ahc-switch"), el("span", "", "跟随最新"));
+
+        let detail;
+        if (this.loading) detail = "正在读取片段列表…";
+        else if (!this.clips.length) detail = "库里还没有片段，首次运行将自动生成首段";
+        else if (this.mode === MODE_NEW) detail = "全新段落模式：点击任意卡片可快速切回接续";
+        else if (follow) detail = `自动接最新：${shotLabel(newest)} · 点击卡片可手动固定`;
+        else detail = pinned ? `已固定：${shotLabel(pinned)} · 点击其他卡片切换` : "已固定的片段不在了，请重新选卡或打开跟随最新";
+
+        const hint = el("span", "ahc-stage-subbar-hint", detail);
+        hint.title = detail;
+        bar.append(box, hint);
+        return bar;
     }
 
     batchBar(visible) {
-        const bar = el("div", "ahr-zone-head ahc-batch");
+        const bar = el("div", "ahc-batch-bar");
         const all = el("label", "ahc-batch-all");
         const box = el("input");
         box.type = "checkbox";
@@ -597,13 +815,13 @@ export class ClipPickerPanel {
             if (box.checked) ids.forEach(id => this.marked.add(id)); else ids.forEach(id => this.marked.delete(id));
             this.render();
         });
-        all.append(box, el("span", "", "全选"));
         const chosen = this.cards.filter(c => this.marked.has(c.clip_id));
         const unlocked = chosen.filter(c => !c.locked);
-        bar.append(all, el("span", "ahr-zone-count", `已选 ${chosen.length} 个`));
-        const lock = textButton("锁定", "lock", () => this.setLocks(chosen, true), "ahr-zone-action");
+        all.append(box, el("span", "", `全选（已选 ${chosen.length}）`));
+
+        const lock = textButton("锁定", "lock", () => this.setLocks(chosen, true));
         lock.disabled = !chosen.some(c => !c.locked);
-        const unlock = textButton("解锁", "unlock", () => this.setLocks(chosen, false), "ahr-zone-action");
+        const unlock = textButton("解锁", "unlock", () => this.setLocks(chosen, false));
         unlock.disabled = !chosen.some(c => c.locked);
         const remove = textButton(`删除 ${unlocked.length} 个`, "trash", () => {
             const confirm = el("div", "ahr-clear-confirm");
@@ -618,11 +836,32 @@ export class ClipPickerPanel {
             });
             remove.replaceWith(confirm);
             no.focus();
-        }, "ahr-zone-action ahc-batch-delete");
+        }, "is-danger");
         remove.disabled = !unlocked.length;
         if (chosen.length && !unlocked.length) remove.title = "选中的片段都已锁定";
-        bar.append(lock, unlock, remove);
+
+        const spacer = el("span", "ahc-spacer");
+        bar.append(all, spacer, lock, unlock, remove);
         return bar;
+    }
+
+    clipGrid(visible) {
+        const grid = el("div", `ahc-grid${this.draftPage ? " is-drafts" : this.mode === MODE_NEW && !this.refineId ? " is-idle" : ""}`);
+        grid.setAttribute("role", "listbox");
+        grid.setAttribute("aria-label", this.draftPage ? "一采草稿" : this.dualStage ? "二采成片" : "接续片段");
+        if (this.error) {
+            grid.append(this.empty("exclamation-triangle", `读取失败：${this.error}`, true));
+        } else {
+            for (const clip of visible) grid.append(this.card(clip));
+            if (!this.loading && this.draftPage && !visible.length) {
+                grid.append(this.empty("inbox", "暂无一采草稿", false, "在左栏开启「只一采」运行后，草稿会显示在这里供挑选二采"));
+            } else if (!this.loading && !this.clips.length && !this.draftPage) {
+                grid.append(this.empty("inbox", this.dualStage ? "暂无二采成片" : "这个项目还没有片段", false, "直接运行即可生成第一段镜头，或点击左栏项目卡切换其他库"));
+            } else if (!this.loading && !visible.length) {
+                grid.append(this.empty("share-alt", "没有可显示的接续链"));
+            }
+        }
+        return grid;
     }
 
     async setLocks(clips, locked) {
@@ -656,7 +895,7 @@ export class ClipPickerPanel {
         }
     }
 
-    // 4: rename in place. Click the name to edit; Enter / blur saves, Esc cancels.
+    // Rename in place. Click the name to edit; Enter / blur saves, Esc cancels.
     nameEditor(clip) {
         const name = el("button", "ahc-name ahc-name-edit", shotLabel(clip));
         name.type = "button";
@@ -701,40 +940,10 @@ export class ClipPickerPanel {
         return name;
     }
 
-    empty(glyph, text, error = false) {
-        const box = el("div", `ahr-add-tile ahc-empty${error ? " is-error" : ""}`);
-        box.append(icon(glyph), el("span", "ahr-add-label", text));
-        return box;
-    }
-
-    // ---------- cards ----------
-    chosenBadge(auto = false) {
-        const badge = el("span", `ahr-badge is-video ahc-chosen${auto ? " is-auto" : ""}`);
-        badge.append(icon(auto ? "history" : "map-marker"), el("span", "", auto ? "接续这一段 · 自动" : "接续这一段 · 已固定"));
-        return badge;
-    }
-
-    // "跟随最新" sits top-left of the clip wall and says what it means in words: on = the next
-    // run takes whatever is newest (named), off = one clip is pinned (named). Clicking a card pins it.
-    followSwitch() {
-        const follow = isLatest(this.selection);
-        const newest = this.clips[0];
-        const pinned = follow ? null : this.clips.find(c => c.clip_id === this.selection);
-        const box = el("label", `ahr-toggle ahc-follow${follow ? " is-on" : ""}`);
-        box.title = follow ? "开着：每次运行都接最新的片段，存了新片段会自动换。点任意卡片可固定接那一段。"
-            : "关着：固定接选中的那一段。打开则改回每次接最新。";
-        const input = el("input");
-        input.type = "checkbox";
-        input.checked = follow;
-        input.setAttribute("aria-label", "跟随最新");
-        input.addEventListener("change", () => this.setFollow(input.checked));
-        const text = el("span", "ahc-follow-text");
-        text.append(el("strong", "", "跟随最新"));
-        let detail;
-        if (follow) detail = newest ? `自动接最新：${shotLabel(newest)}` : "库里还没有片段";
-        else detail = pinned ? `已固定：${shotLabel(pinned)}` : "已固定的片段不在了";
-        text.append(el("small", "", detail));
-        box.append(input, el("span", "ahr-switch"), text);
+    empty(glyph, text, error = false, sub = "") {
+        const box = el("div", `ahc-empty${error ? " is-error" : ""}`);
+        box.append(icon(glyph), el("strong", "", text));
+        if (sub) box.append(el("small", "", sub));
         return box;
     }
 
@@ -755,23 +964,26 @@ export class ClipPickerPanel {
         return clip.has_video ? this.url(clip.video_url) : "";
     }
 
+    // ---------- cards ----------
     card(clip) {
         const draft = clip.clip_stage === "draft";
         const refining = clip.clip_id === this.refineId && clip.stage_revision === this.fields.get("refine_revision");
-        const newest = clip === this.clips[0];
+        const newest = !draft && clip === this.clips[0];
         const continuing = !draft && !this.refineId && this.mode === MODE_CONTINUE;
         const auto = continuing && isLatest(this.selection) && newest;
         const on = refining || auto || (continuing && this.selection === clip.clip_id);
-        const card = el("div", `ahr-card ahc-card${on ? " is-selected" : ""}${auto ? " is-auto" : ""}${clip.locked ? " is-locked" : ""}`);
+        const card = el("article", `ahc-card${on ? " is-selected" : ""}${auto ? " is-auto" : ""}${refining ? " is-refining" : ""}${clip.locked ? " is-locked" : ""}`);
         card.setAttribute("role", "option");
         card.setAttribute("aria-selected", String(on));
         card.tabIndex = 0;
         card.dataset.clipId = clip.clip_id;
         card.title = draft || this.refineId ? "双击查看详情" : "单击接续这一段，双击查看详情";
+
         const cover = el("div", "ahc-cover");
-        if (clip.thumbnail_url) {
+        const thumbUrl = this.clipThumbUrl(clip);
+        if (thumbUrl) {
             const image = el("img");
-            image.src = this.url(clip.thumbnail_url + (clip.stage_revision ? `&v=${encodeURIComponent(clip.stage_revision)}` : ""));
+            image.src = thumbUrl;
             image.alt = "";
             image.loading = "lazy";
             image.draggable = false;
@@ -780,8 +992,10 @@ export class ClipPickerPanel {
         } else {
             cover.append(icon("image"));
         }
+        cover.append(el("div", "ahc-cover-scrim"));
+
         if (this.bestVideo(clip)) {
-            const play = el("button", "ahr-cover-play");
+            const play = el("button", "ahc-play");
             play.type = "button";
             play.title = "播放";
             play.setAttribute("aria-label", "播放");
@@ -790,93 +1004,58 @@ export class ClipPickerPanel {
             cover.append(play);
             this.hoverPreview(card, cover, clip);
         }
-        if (draft) cover.append(el("span", "ahr-badge is-video ahc-draft-badge", "一采草稿"));
-        else if (on && !refining) cover.append(this.chosenBadge(auto));
+
+        if (refining) cover.append(el("span", "ahc-badge is-refining", "仅跑二采"));
+        else if (draft) cover.append(el("span", "ahc-badge is-draft", "一采草稿"));
+        else if (on) cover.append(el("span", "ahc-badge", auto ? "接续 · 自动" : "接续 · 已固定"));
+
         if (newest) cover.append(el("span", "ahc-newest", "最新"));
-        // always-visible card tools, as on the reference hub cards
-        const tools = el("div", "ahr-card-tools");
-        const lock = textButton(clip.locked ? "已锁定" : "锁定", clip.locked ? "lock" : "lock-open",
-            () => this.setLock(clip, !clip.locked), clip.locked ? "is-locked" : "");
+        if (clip.locked) {
+            const lockDot = el("span", "ahc-lock-dot");
+            lockDot.title = "已锁定";
+            lockDot.append(icon("lock"));
+            cover.append(lockDot);
+        }
+
+        // Hover-reveal frosted glass card tools
+        const tools = el("div", "ahc-card-tools");
+        const lock = el("button", `ahc-tbtn${clip.locked ? " is-locked" : ""}`);
+        lock.type = "button";
         lock.title = clip.locked ? "已锁定，点击解锁" : "锁定，防止误删";
         lock.setAttribute("aria-label", lock.title);
         lock.setAttribute("aria-pressed", String(!!clip.locked));
+        lock.append(icon(clip.locked ? "lock" : "lock-open"));
+        lock.addEventListener("click", event => { event.stopPropagation(); this.setLock(clip, !clip.locked); });
         tools.append(lock, this.deleteButton(clip));
+
         if (this.dualStage && !draft && clip.stage_ready && !this.batch) {
-            const more = iconButton("ellipsis-h", "更多片段操作", () => {
-                const visible = menu.hidden;
-                menu.hidden = !visible;
-                confirm.hidden = true;
-                more.setAttribute("aria-expanded", String(visible));
-                if (visible) menu.querySelector("button")?.focus();
-            });
-            more.setAttribute("aria-expanded", "false");
-            const menu = el("div", "ahc-rerun-menu");
-            menu.hidden = true;
             const confirm = el("div", "ahc-rerun-confirm");
             confirm.hidden = true;
-            const rerun = textButton("重跑二采", "refresh", () => {
-                menu.hidden = true;
-                confirm.hidden = false;
-                confirm.querySelector("button")?.focus();
-            });
+            const cancel = () => { confirm.hidden = true; rerun.focus(); };
+            const rerun = el("button", "ahc-tbtn ahc-tbtn-text");
+            rerun.type = "button";
             rerun.disabled = Boolean(clip.locked);
-            if (clip.locked) rerun.title = "请先解锁这张成片";
-            menu.append(rerun);
-            const cancel = () => {
-                menu.hidden = true;
-                confirm.hidden = true;
-                more.setAttribute("aria-expanded", "false");
-                more.focus();
-            };
-            confirm.append(el("p", "", "二采成功后将替换当前二采结果，一采不变。"),
-                textButton("取消", "", cancel, "is-quiet"),
-                textButton("确认重跑", "check", () => this.chooseRefine(clip), "is-danger"));
-            tools.append(more);
-            card.append(menu, confirm);
-            card.addEventListener("keydown", event => {
-                if (event.key === "Escape" && (!menu.hidden || !confirm.hidden)) {
-                    event.stopPropagation();
-                    cancel();
-                }
+            rerun.title = clip.locked ? "请先解锁这张成片" : "保留一采结果，重新跑二采";
+            rerun.append(icon("refresh"), el("span", "", "二采"));
+            rerun.addEventListener("click", event => {
+                event.stopPropagation();
+                confirm.hidden = !confirm.hidden;
+                if (!confirm.hidden) confirm.querySelector("button")?.focus();
             });
+            confirm.append(
+                el("p", "", "二采成功后将替换当前二采结果，一采不变。"),
+                textButton("取消", "", cancel),
+                textButton("确认重跑", "check", () => this.chooseRefine(clip), "is-danger-solid")
+            );
+            confirm.addEventListener("click", e => e.stopPropagation());
+            card.addEventListener("keydown", event => {
+                if (event.key === "Escape" && !confirm.hidden) { event.stopPropagation(); cancel(); }
+            });
+            tools.append(rerun);
+            card.append(confirm);
         }
         cover.append(tools);
 
-        const body = el("div", "ahc-body");
-        const nameRow = el("div", "ahc-name-row");
-        nameRow.append(this.nameEditor(clip));
-        const when = relativeTime(clip.created_at);
-        if (when) {
-            const time = el("span", "ahc-time", when);
-            time.title = fullTime(clip.created_at);
-            nameRow.append(time);
-        }
-        body.append(nameRow);
-        const passes = el("div", "ahc-passes");
-        const have = variantsOf(clip);
-        for (const name of [PASS_ONE, PASS_TWO]) {
-            if (have[name] === undefined) continue;
-            const pill = el("span", `ahc-pass${name === PASS_TWO ? " is-two" : ""}`);
-            pill.append(el("b", "", name), el("span", "", have[name] ? `${have[name].toFixed(1)}s` : "—"));
-            passes.append(pill);
-        }
-        body.append(passes);
-        const meta = el("div", "ahr-meta ahc-meta");
-        const parent = parentLabel(clip, this.clips);
-        meta.append(el("span", "", parent ? `接自 ${parent}` : "全新段落"), el("span", "", resolutionOf(clip)));
-        body.append(meta);
-        if (refining || (draft && clip.stage_ready && !this.batch)) {
-            const actions = el("div", "ahc-draft-actions");
-            if (refining) {
-                const selected = el("span", "ahc-draft-selected");
-                selected.append(icon("check"), el("span", "", "已选作二采"));
-                actions.append(selected);
-            } else {
-                actions.append(textButton("用这张做二采", "arrow-right", () => this.chooseRefine(clip), "is-confirm"));
-            }
-            body.append(actions);
-        }
-        card.append(cover, body);
         if (this.batch) {
             const mark = el("input", "ahc-mark");
             mark.type = "checkbox";
@@ -890,8 +1069,48 @@ export class ClipPickerPanel {
             cover.append(mark);
             card.classList.toggle("is-marked", mark.checked);
         }
+
+        const body = el("div", "ahc-body");
+        const nameRow = el("div", "ahc-name-row");
+        nameRow.append(this.nameEditor(clip));
+        const when = relativeTime(clip.created_at);
+        if (when) {
+            const time = el("span", "ahc-time", when);
+            time.title = fullTime(clip.created_at);
+            nameRow.append(time);
+        }
+        body.append(nameRow);
+
+        const meta = el("div", "ahc-meta");
+        const parent = parentLabel(clip, this.clips);
+        meta.append(el("span", "", parent ? `接自 ${parent}` : "全新段落"), el("span", "", resolutionOf(clip)));
+        body.append(meta);
+
+        const passes = el("div", "ahc-passes");
+        const have = variantsOf(clip);
+        for (const name of [PASS_ONE, PASS_TWO]) {
+            if (have[name] === undefined) continue;
+            const pill = el("span", `ahc-pass${name === PASS_TWO ? " is-two" : ""}`);
+            pill.append(el("b", "", name), el("span", "", have[name] ? `${have[name].toFixed(1)}s` : "—"));
+            passes.append(pill);
+        }
+        body.append(passes);
+
+        if (refining || (draft && clip.stage_ready && !this.batch)) {
+            const actions = el("div", "ahc-draft-actions");
+            if (refining) {
+                const selected = el("span", "ahc-draft-selected");
+                selected.append(icon("check"), el("span", "", "已选作仅跑二采"));
+                actions.append(selected);
+            } else {
+                actions.append(textButton("用这张做二采", "arrow-right", () => this.chooseRefine(clip), "is-solid is-full"));
+            }
+            body.append(actions);
+        }
+        card.append(cover, body);
+
         card.addEventListener("click", event => {
-            if (event.detail > 1 || event.target.closest("button, input, .ahr-clear-confirm")) return;
+            if (event.detail > 1 || event.target.closest("button, input, .ahr-clear-confirm, .ahc-rerun-confirm")) return;
             if (this.batch) {
                 if (this.marked.has(clip.clip_id)) this.marked.delete(clip.clip_id); else this.marked.add(clip.clip_id);
                 this.render();
@@ -928,15 +1147,22 @@ export class ClipPickerPanel {
                 if (!card.isConnected) return;
                 video = el("video", "ahc-hover");
                 Object.assign(video, { src, muted: true, loop: true, playsInline: true, autoplay: true });
-                cover.insertBefore(video, cover.querySelector(".ahr-cover-play"));
+                cover.insertBefore(video, cover.querySelector(".ahc-play"));
             }, 220);
         });
         card.addEventListener("mouseleave", stop);
     }
 
-    // Delete with the hub's inline confirm (no browser dialog); locked cards cannot be deleted.
+    // Delete with inline confirm (no browser dialog); locked cards cannot be deleted.
     deleteButton(clip) {
-        const button = iconButton("trash", clip.locked ? "已锁定，先解锁才能删除" : "删除这个片段", () => {
+        const button = el("button", "ahc-tbtn is-danger");
+        button.type = "button";
+        button.title = clip.locked ? "已锁定，先解锁才能删除" : "删除这个片段";
+        button.setAttribute("aria-label", button.title);
+        button.append(icon("trash"));
+        button.disabled = !!clip.locked;
+        button.addEventListener("click", event => {
+            event.stopPropagation();
             const confirm = el("div", "ahr-clear-confirm");
             confirm.setAttribute("role", "group");
             confirm.setAttribute("aria-label", "确认删除片段");
@@ -956,13 +1182,13 @@ export class ClipPickerPanel {
             }, "is-danger-solid");
             const no = textButton("取消", "", () => confirm.replaceWith(button));
             confirm.append(el("span", "ahr-clear-text", "删除？"), yes, no);
-            confirm.addEventListener("keydown", event => {
-                if (event.key === "Escape") { event.stopPropagation(); confirm.replaceWith(button); button.focus(); }
+            confirm.addEventListener("click", e => e.stopPropagation());
+            confirm.addEventListener("keydown", e => {
+                if (e.key === "Escape") { e.stopPropagation(); confirm.replaceWith(button); button.focus(); }
             });
             button.replaceWith(confirm);
             no.focus();
-        }, "is-danger");
-        button.disabled = !!clip.locked;
+        });
         return button;
     }
 

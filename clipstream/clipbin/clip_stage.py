@@ -358,10 +358,29 @@ class ClipStageError(io.ComfyNode):
         raise ValueError(message)
 
 
+def _targets_touch_stage(prompt, targets):
+    """True when partial_execution_targets is absent or actually reaches PICKER / SAVER."""
+    if not isinstance(targets, (list, tuple)) or not targets:
+        return True
+    valid = [str(tid) for tid in targets if str(tid) in prompt]
+    if not valid:
+        return True
+    try:
+        reached = _closure(prompt, valid)
+    except ValueError:
+        return True
+    return any(
+        isinstance(prompt.get(nid), dict) and prompt[nid].get("class_type") in (PICKER, SAVER)
+        for nid in reached
+    )
+
+
 def route_submission(data):
     prompt = data.get("prompt")
     if not isinstance(prompt, dict) or not any(isinstance(node, dict) and node.get("class_type") in (PICKER, SAVER)
                                               for node in prompt.values()):
+        return data
+    if not _targets_touch_stage(prompt, data.get("partial_execution_targets")):
         return data
     try:
         outcome = plan_submission(prompt)

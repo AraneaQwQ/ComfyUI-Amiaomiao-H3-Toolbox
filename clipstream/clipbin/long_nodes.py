@@ -19,6 +19,8 @@ import logging
 
 from .long_builder import (
     build_long_video,
+    long_video_fingerprint,
+    record_long_video_output,
     JOIN_AUTO,
     JOIN_MODES,
     PLAYBACK_SPEED_OPTIONS,
@@ -79,6 +81,33 @@ class MiniMaxClipBinLongBuilderNode(io.ComfyNode):
         )
 
     @classmethod
+    def fingerprint_inputs(cls,
+                           project_name: str = "Default_Project",
+                           exclude_clips: str = "",
+                           clip_order: str = "",
+                           variant_policy: str = VARIANT_PREFER_UP,
+                           join_mode: str = JOIN_AUTO,
+                           fps: float = 24.0,
+                           output_name: str = "",
+                           playback_speed: str = "1.0x",
+                           playback_speed_custom: float = 1.0,
+                           asset_kind: str = "dual",
+                           **kwargs):
+        return long_video_fingerprint(
+            project_name=project_name,
+            asset_kind=asset_kind,
+            exclude_clips=exclude_clips,
+            clip_order=clip_order,
+            variant_policy=variant_policy,
+            join_mode=join_mode,
+            fps=fps,
+            output_name=output_name,
+            playback_speed=playback_speed,
+            playback_speed_custom=playback_speed_custom,
+            owner=cls.__name__,
+        )
+
+    @classmethod
     def execute(cls,
                project_name: str = "Default_Project",
                exclude_clips: str = "",
@@ -103,6 +132,19 @@ class MiniMaxClipBinLongBuilderNode(io.ComfyNode):
             playback_speed=playback_speed,
             playback_speed_custom=playback_speed_custom,
         )
+        fp = cls.fingerprint_inputs(
+            project_name=project_name,
+            exclude_clips=exclude_clips,
+            clip_order=clip_order,
+            variant_policy=variant_policy,
+            join_mode=join_mode,
+            fps=fps,
+            output_name=output_name,
+            playback_speed=playback_speed,
+            playback_speed_custom=playback_speed_custom,
+            asset_kind=asset_kind,
+        )
+        record_long_video_output(cls.__name__, fp, result["path"])
         for warning in result["warnings"]:
             logger.warning("[Long Builder] %s", warning)
         # The sockets were dropped on purpose, so the audit trail lives in the log.
