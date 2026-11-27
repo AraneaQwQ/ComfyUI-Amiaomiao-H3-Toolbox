@@ -76,7 +76,7 @@ function mediaCard({ name, badge, badgeKind = "video", imageUrl, durationText = 
 }
 
 export function installVideoV3(node, cut) {
-    stylesheet("amiaomiao-h3-refs-style", "../refs/refs.css?v=20261127x");
+    stylesheet("amiaomiao-h3-refs-style", "../refs/refs.css?v=20261127y");
     stylesheet("amiaomiao-h3-ui-theme-style", "../refs/ui_theme.css?v=20261127w");
     stylesheet("amiaomiao-ahv3", "./video_v3.css?v=20261127s");
 

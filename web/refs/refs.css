@@ -2086,13 +2086,17 @@ button.ahl-thumb:hover {
     font-weight: var(--h3-weight-body, 500);
     line-height: 1.68;
     letter-spacing: 0;
+    font-variant-ligatures: none;
+    font-kerning: none;
     white-space: pre-wrap;
     overflow-wrap: break-word;
     word-break: normal;
     tab-size: 4;
     scrollbar-gutter: stable;
+    scrollbar-width: thin;
 }
 .ahp-backdrop { overflow: hidden; color: transparent; pointer-events: none; }
+.ahp-backdrop.is-gutter-locked { scrollbar-gutter: auto; }
 .ahp-backdrop mark { border-radius: 4px; color: transparent; }
 .ahp-backdrop mark.is-image { background: color-mix(in srgb, var(--ahr-image) 22%, transparent); box-shadow: inset 0 -1.5px 0 var(--ahr-image); }
 .ahp-backdrop mark.is-video { background: color-mix(in srgb, var(--ahr-video) 22%, transparent); box-shadow: inset 0 -1.5px 0 var(--ahr-video); }
@@ -2112,7 +2116,6 @@ button.ahl-thumb:hover {
     color: var(--ahr-text);
     caret-color: var(--ahr-accent);
     outline: none;
-    scrollbar-width: thin;
 }
 .ahp-input::placeholder { color: var(--ahr-faint); }
 
@@ -5394,6 +5397,8 @@ button.ahl-thumb:hover {
     font-weight: var(--h3-weight-body, 500);
     line-height: 1.68;
     letter-spacing: 0;
+    font-variant-ligatures: none;
+    font-kerning: none;
     text-rendering: var(--h3-text-render, geometricPrecision);
     -webkit-font-smoothing: var(--h3-font-smooth, antialiased);
 }

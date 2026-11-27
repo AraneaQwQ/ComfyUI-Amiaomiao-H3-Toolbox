@@ -73,6 +73,10 @@ export class PromptPanel {
         this.menu = null;
         this.copyTimer = null;
         this.splitterCleanup = null;
+        this.resizeObserver = null;
+        this.metricsRaf = 0;
+        this.lastScrollbarW = -1;
+        this.lastScrollbarH = -1;
         this.railWidth = storedRailWidth();
         this.railCards = [];
         this.root = el("div", "ahr ahp");
@@ -208,6 +212,11 @@ export class PromptPanel {
         // the hub may have changed while the pointer was elsewhere
         this.root.addEventListener("pointerenter", () => this.refresh());
         this.input.addEventListener("focus", () => this.refresh());
+        if (typeof ResizeObserver === "function") {
+            this.resizeObserver = new ResizeObserver(() => this.syncMetrics());
+            this.resizeObserver.observe(this.input);
+        }
+        this.scheduleMetricsSync();
     }
 
     buildSplitter() {
@@ -268,7 +277,7 @@ export class PromptPanel {
                 e2.stopPropagation();
                 const delta = (e2.clientX - startX) / (scale || 1);
                 this.setRailWidth(startRailW - delta, false, maxW);
-                this.syncScroll();
+                this.syncMetrics();
             };
             const onUp = e2 => {
                 e2.preventDefault();
@@ -293,6 +302,7 @@ export class PromptPanel {
         if (persist) {
             try { localStorage.setItem(RAIL_WIDTH_KEY, String(clamped)); } catch { /* optional */ }
         }
+        this.scheduleMetricsSync();
     }
 
     buildHints() {
@@ -370,7 +380,8 @@ export class PromptPanel {
         this.fontLarger.disabled = this.fontSize >= MAX_FONT_SIZE;
         if (remember) {
             try { localStorage.setItem(FONT_SIZE_KEY, String(this.fontSize)); } catch { /* display preference is optional */ }
-            this.syncScroll();
+            this.syncMetrics();
+            this.scheduleMetricsSync();
             if (this.menu) this.placeMenu();
         }
     }
@@ -398,6 +409,7 @@ export class PromptPanel {
         // bring the caret line into view
         this.input.blur();
         this.input.focus();
+        this.scheduleMetricsSync();
     }
 
     dialogue() {
@@ -556,7 +568,7 @@ export class PromptPanel {
         parts.push(document.createTextNode("\n"));
         this.backdrop.replaceChildren(...parts);
         this.markFields();
-        this.syncScroll();
+        this.syncMetrics();
 
         this.warning.replaceChildren();
         const problems = [];
@@ -609,7 +621,42 @@ export class PromptPanel {
         }
     }
 
+    syncMetrics() {
+        const input = this.input;
+        const backdrop = this.backdrop;
+        if (!input || !backdrop) return;
+        if (input.offsetWidth > 0 && input.offsetHeight > 0) {
+            const sbW = Math.max(0, input.offsetWidth - input.clientWidth);
+            const sbH = Math.max(0, input.offsetHeight - input.clientHeight);
+            if (!backdrop.classList.contains("is-gutter-locked")) {
+                backdrop.classList.add("is-gutter-locked");
+            }
+            if (sbW !== this.lastScrollbarW) {
+                backdrop.style.right = `${sbW}px`;
+                this.lastScrollbarW = sbW;
+            }
+            if (sbH !== this.lastScrollbarH) {
+                backdrop.style.bottom = `${sbH}px`;
+                this.lastScrollbarH = sbH;
+            }
+        }
+        backdrop.scrollTop = input.scrollTop;
+        backdrop.scrollLeft = input.scrollLeft;
+    }
+
+    scheduleMetricsSync() {
+        if (this.metricsRaf) cancelAnimationFrame(this.metricsRaf);
+        this.metricsRaf = requestAnimationFrame(() => {
+            this.metricsRaf = 0;
+            this.syncMetrics();
+        });
+    }
+
     syncScroll() {
+        if (!this.backdrop || !this.input) return;
+        if (!this.backdrop.classList.contains("is-gutter-locked") && this.input.offsetWidth > 0 && this.input.offsetHeight > 0) {
+            return this.syncMetrics();
+        }
         this.backdrop.scrollTop = this.input.scrollTop;
         this.backdrop.scrollLeft = this.input.scrollLeft;
     }
@@ -810,6 +857,10 @@ export class PromptPanel {
 
     dispose() {
         clearTimeout(this.copyTimer);
+        if (this.metricsRaf) cancelAnimationFrame(this.metricsRaf);
+        this.metricsRaf = 0;
+        this.resizeObserver?.disconnect();
+        this.resizeObserver = null;
         this.splitterCleanup?.();
         this.closeMenu();
     }
