@@ -1,8 +1,30 @@
 import { api } from "../../../scripts/api.js";
 import { openLibraryBrowser, relativeTime, fullTime } from "../refs/library_browser.js";
-import { CARD_DENSITIES, normalizeCardDensity } from "../refs/refs_state.js";
 
-const DENSITY_SHORT = { xlarge: "特大", large: "大", medium: "中" };
+const CARD_SCALE_MIN = 0.50;
+const CARD_SCALE_MAX = 2.00;
+const CARD_SCALE_STEP = 0.05;
+const CARD_SCALE_DEFAULT = 1.00;
+
+function normalizeCardScale(value, legacyDensity) {
+    const raw = Number(value);
+    if (Number.isFinite(raw) && raw > 0) {
+        const normalized = raw > 10 ? raw / 100 : raw;
+        const clamped = Math.min(CARD_SCALE_MAX, Math.max(CARD_SCALE_MIN, normalized));
+        return Math.round(clamped / CARD_SCALE_STEP) * CARD_SCALE_STEP;
+    }
+    if (legacyDensity === "medium") return 0.80;
+    if (legacyDensity === "xlarge" || legacyDensity === "extra") return 1.45;
+    return CARD_SCALE_DEFAULT;
+}
+function scaleToLegacyDensity(scale) {
+    if (scale <= 0.85) return "medium";
+    if (scale >= 1.30) return "xlarge";
+    return "large";
+}
+function scaleProgress(scale) {
+    return `${((scale - CARD_SCALE_MIN) / (CARD_SCALE_MAX - CARD_SCALE_MIN)) * 100}%`;
+}
 
 export function el(tag, cls, text) {
     const element = document.createElement(tag);
@@ -63,39 +85,63 @@ export function createShell(node, title, subtitle, symbol, accentKind, signal) {
     subtitleEl.hidden = !subtitle;
     brand.append(badge, titleEl, subtitleEl);
 
-    const headRight = el("div", "ahv3-head-right");
-    const densities = el("div", "ahv3-seg ahv3-density-seg");
-    densities.setAttribute("role", "group");
-    densities.setAttribute("aria-label", "卡片大小");
-
-    function refreshDensity() {
-        const saved = node.properties?.h3VideoDensity;
-        root.dataset.density = normalizeCardDensity(saved === "extra" ? "xlarge" : saved);
-        for (const control of densities.children) {
-            control.setAttribute("aria-pressed", String(control.dataset.size === root.dataset.density));
-        }
-    }
-    for (const [size, _sym, label] of CARD_DENSITIES) {
-        const control = el("button", "", DENSITY_SHORT[size] || label);
-        control.type = "button";
-        control.title = label;
-        control.setAttribute("aria-label", label);
-        control.dataset.size = size;
-        control.addEventListener("click", () => {
-            node.properties ??= {};
-            node.properties.h3VideoDensity = size;
-            refreshDensity();
-            node.setDirtyCanvas?.(true, true);
-        });
-        densities.append(control);
-    }
-    headRight.append(densities);
-    head.append(brand, headRight);
+    head.append(brand);
 
     const split = el("div", "ahv3-split");
     const rail = el("aside", "ahv3-rail");
     const railScroll = el("div", "ahv3-rail-scroll");
-    rail.append(railScroll);
+
+    // Unified Bottom-Left Free Card-Size Slider (consistent with H3 参考素材)
+    const railFoot = el("div", "ahv3-rail-foot");
+    const scaleRow = el("div", "ahv3-scale-row");
+    const scaleLabel = el("span", "ahv3-scale-lbl", "卡片大小");
+    scaleLabel.title = "拖动自由调节右侧卡片显示比例（双击恢复 100%）";
+    const scaleSlider = el("input", "ahv3-scale-slider");
+    scaleSlider.type = "range";
+    scaleSlider.min = String(CARD_SCALE_MIN);
+    scaleSlider.max = String(CARD_SCALE_MAX);
+    scaleSlider.step = String(CARD_SCALE_STEP);
+    scaleSlider.setAttribute("aria-label", "卡片显示大小");
+    scaleSlider.title = "左右拖动自由调节卡片大小（双击恢复 100%）";
+    const scaleVal = el("button", "ahv3-scale-val", "100%");
+    scaleVal.type = "button";
+    scaleVal.title = "点击恢复默认 100%";
+
+    function applyScaleUi(scale) {
+        root.dataset.density = "custom";
+        root.dataset.compactCards = scale <= 0.75 ? "1" : "0";
+        root.style.setProperty("--h3-card-scale", scale.toFixed(2));
+        scaleSlider.value = scale.toFixed(2);
+        scaleSlider.style.setProperty("--slider-pct", scaleProgress(scale));
+        scaleVal.textContent = `${Math.round(scale * 100)}%`;
+        scaleVal.classList.toggle("is-default", Math.abs(scale - CARD_SCALE_DEFAULT) < 0.001);
+    }
+
+    function refreshDensity() {
+        const scale = normalizeCardScale(node.properties?.h3VideoCardScale, node.properties?.h3VideoDensity);
+        applyScaleUi(scale);
+    }
+
+    function commitScale(nextRaw, dirty = false) {
+        const next = normalizeCardScale(nextRaw);
+        node.properties ??= {};
+        node.properties.h3VideoCardScale = Number(next.toFixed(2));
+        node.properties.h3VideoDensity = scaleToLegacyDensity(next);
+        applyScaleUi(next);
+        if (dirty) node.setDirtyCanvas?.(true, true);
+    }
+
+    scaleSlider.addEventListener("pointerdown", event => event.stopPropagation());
+    scaleSlider.addEventListener("input", () => commitScale(scaleSlider.value, false));
+    scaleSlider.addEventListener("change", () => commitScale(scaleSlider.value, true));
+    scaleSlider.addEventListener("dblclick", () => commitScale(CARD_SCALE_DEFAULT, true));
+    scaleLabel.addEventListener("dblclick", () => commitScale(CARD_SCALE_DEFAULT, true));
+    scaleVal.addEventListener("click", () => commitScale(CARD_SCALE_DEFAULT, true));
+
+    scaleRow.append(scaleLabel, scaleSlider, scaleVal);
+    railFoot.append(scaleRow);
+    rail.append(railScroll, railFoot);
+
     const stage = el("main", "ahv3-stage");
     split.append(rail, stage);
 
@@ -116,7 +162,7 @@ export function createShell(node, title, subtitle, symbol, accentKind, signal) {
         timer = setTimeout(() => hint.classList.remove("is-visible"), 3700);
     }
     refreshDensity();
-    return { root, head, subtitleEl, split, rail, railScroll, stage, toast, refreshDensity };
+    return { root, head, subtitleEl, split, rail, railScroll, railFoot, stage, toast, refreshDensity };
 }
 
 export function railGroup(parent, title, metaText = "") {

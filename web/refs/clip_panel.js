@@ -2,12 +2,36 @@
 // The picker edits the node's own hidden widgets (project_name, mode,
 // clip_selection, passes and continuation settings), so saved workflows keep their values in place.
 import { openLibraryBrowser, relativeTime, fullTime } from "./library_browser.js";
-import { CARD_DENSITIES, normalizeCardDensity } from "./refs_state.js";
 import { AUDIO_LENGTH_MAX, CONTEXT_LENGTHS, FLOW_DUAL, FLOW_SINGLE, LATEST, MODE_CONTINUE, MODE_NEW, PASS_ONE, PASS_TWO,
     chainOf, isLatest, normalizeContext, normalizeMode, normalizePasses, parentLabel, plannedStatus,
     resolutionOf, shotLabel, splitStageCards, variantsOf } from "./clip_state.js";
 
 const DENSITY_KEY = "amiaomiao.clipv2.density";
+const CARD_SCALE_KEY = "amiaomiao.clipv2.card-scale";
+const CARD_SCALE_MIN = 0.50;
+const CARD_SCALE_MAX = 2.00;
+const CARD_SCALE_STEP = 0.05;
+const CARD_SCALE_DEFAULT = 1.00;
+
+function normalizeCardScale(value, legacyDensity) {
+    const raw = Number(value);
+    if (Number.isFinite(raw) && raw > 0) {
+        const normalized = raw > 10 ? raw / 100 : raw;
+        const clamped = Math.min(CARD_SCALE_MAX, Math.max(CARD_SCALE_MIN, normalized));
+        return Math.round(clamped / CARD_SCALE_STEP) * CARD_SCALE_STEP;
+    }
+    if (legacyDensity === "medium") return 0.80;
+    if (legacyDensity === "xlarge" || legacyDensity === "extra") return 1.45;
+    return CARD_SCALE_DEFAULT;
+}
+function scaleToLegacyDensity(scale) {
+    if (scale <= 0.85) return "medium";
+    if (scale >= 1.30) return "xlarge";
+    return "large";
+}
+function scaleProgress(scale) {
+    return `${((scale - CARD_SCALE_MIN) / (CARD_SCALE_MAX - CARD_SCALE_MIN)) * 100}%`;
+}
 
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -37,8 +61,12 @@ function textButton(label, iconName, onClick, className = "") {
     node.addEventListener("click", event => { event.stopPropagation(); onClick(event); });
     return node;
 }
-function readDensity() {
-    try { return normalizeCardDensity(localStorage.getItem(DENSITY_KEY)); } catch { return "large"; }
+function readCardScale() {
+    try {
+        const savedScale = localStorage.getItem(CARD_SCALE_KEY);
+        const legacy = localStorage.getItem(DENSITY_KEY);
+        return normalizeCardScale(savedScale, legacy);
+    } catch { return CARD_SCALE_DEFAULT; }
 }
 function thumbPlaceholder() {
     const box = el("div", "ahc-lib-thumb-empty");
@@ -69,7 +97,7 @@ export class ClipPickerPanel {
         this.loading = true;
         this.error = "";
         this.lastRun = null;
-        this.density = readDensity();
+        this.cardScale = readCardScale();
         this.view = "all";          // all | chain (only the chain the next run continues)
         this.batch = false;         // batch lock / delete mode
         this.marked = new Set();
@@ -291,13 +319,17 @@ export class ClipPickerPanel {
 
     // ---------- layout: Scheme A Studio Split (Soft Luminous + Resize-Proof) ----------
     render() {
-        // never rebuild under a text field being typed in (a focused checkbox/radio is fine)
+        // never rebuild under a text field being typed in (checkbox/radio/range is fine)
         if (this.root.contains(document.activeElement)
-            && document.activeElement.matches?.("input:not([type=checkbox]):not([type=radio]), textarea")) return;
+            && document.activeElement.matches?.("input:not([type=checkbox]):not([type=radio]):not([type=range]), textarea")) return;
         const railTop = this.railScroll?.scrollTop || 0;
         const stageTop = this.stageScroll?.scrollTop || 0;
         this.root.replaceChildren();
-        this.root.dataset.density = this.density;
+        const scale = normalizeCardScale(this.cardScale);
+        this.cardScale = scale;
+        this.root.dataset.density = "custom";
+        this.root.dataset.compactCards = scale <= 0.75 ? "1" : "0";
+        this.root.style.setProperty("--h3-card-scale", scale.toFixed(2));
 
         const split = el("div", "ahc-split");
         const rail = el("aside", "ahc-rail");
@@ -310,7 +342,7 @@ export class ClipPickerPanel {
             const params = this.paramsBlock();
             if (params) this.railScroll.append(params);
         }
-        rail.append(this.railScroll, this.planHud());
+        rail.append(this.railScroll, this.planHud(), this.scaleFooter());
 
         const main = el("div", "ahc-main");
         const visible = this.visibleClips();
@@ -684,6 +716,56 @@ export class ClipPickerPanel {
         return hud;
     }
 
+    // ---------- Left Rail Bottom-Left Free Card-Size Slider (50%–200%, unified across all 4 nodes) ----------
+    scaleFooter() {
+        const foot = el("div", "ahc-rail-foot");
+        const row = el("div", "ahc-scale-row");
+        const label = el("span", "ahc-scale-lbl", "卡片大小");
+        label.title = "拖动自由调节右侧卡片显示比例（双击恢复 100%）";
+        const slider = el("input", "ahc-scale-slider");
+        slider.type = "range";
+        slider.min = String(CARD_SCALE_MIN);
+        slider.max = String(CARD_SCALE_MAX);
+        slider.step = String(CARD_SCALE_STEP);
+        slider.value = this.cardScale.toFixed(2);
+        slider.style.setProperty("--slider-pct", scaleProgress(this.cardScale));
+        slider.setAttribute("aria-label", "卡片显示大小");
+        slider.title = "左右拖动自由调节卡片大小（50%–200%，双击恢复 100%）";
+
+        const valBtn = el("button", "ahc-scale-val", `${Math.round(this.cardScale * 100)}%`);
+        valBtn.type = "button";
+        valBtn.title = "点击恢复默认 100%";
+
+        const applyScale = (nextRaw, persist = false) => {
+            const next = normalizeCardScale(nextRaw);
+            this.cardScale = next;
+            slider.value = next.toFixed(2);
+            slider.style.setProperty("--slider-pct", scaleProgress(next));
+            valBtn.textContent = `${Math.round(next * 100)}%`;
+            valBtn.classList.toggle("is-default", Math.abs(next - CARD_SCALE_DEFAULT) < 0.001);
+            this.root.dataset.density = "custom";
+            this.root.dataset.compactCards = next <= 0.75 ? "1" : "0";
+            this.root.style.setProperty("--h3-card-scale", next.toFixed(2));
+            if (persist) {
+                try {
+                    localStorage.setItem(CARD_SCALE_KEY, next.toFixed(2));
+                    localStorage.setItem(DENSITY_KEY, scaleToLegacyDensity(next));
+                } catch { /* optional */ }
+            }
+        };
+        valBtn.classList.toggle("is-default", Math.abs(this.cardScale - CARD_SCALE_DEFAULT) < 0.001);
+        slider.addEventListener("pointerdown", event => event.stopPropagation());
+        slider.addEventListener("input", () => applyScale(slider.value, false));
+        slider.addEventListener("change", () => applyScale(slider.value, true));
+        slider.addEventListener("dblclick", () => applyScale(CARD_SCALE_DEFAULT, true));
+        label.addEventListener("dblclick", () => applyScale(CARD_SCALE_DEFAULT, true));
+        valBtn.addEventListener("click", () => applyScale(CARD_SCALE_DEFAULT, true));
+
+        row.append(label, slider, valBtn);
+        foot.append(row);
+        return foot;
+    }
+
     visibleClips() {
         if (this.draftPage) return this.drafts;
         if (this.view !== "chain") return this.clips;
@@ -744,27 +826,6 @@ export class ClipPickerPanel {
         batch.setAttribute("aria-pressed", String(this.batch));
         batch.disabled = !visible.length;
         tools.append(batch);
-
-        const density = el("div", "ahc-seg");
-        density.setAttribute("role", "group");
-        density.setAttribute("aria-label", "卡片尺寸");
-        for (const [value, , label] of CARD_DENSITIES) {
-            const option = el("button", "", label.replace("卡片", ""));
-            option.type = "button";
-            option.title = label;
-            option.setAttribute("aria-label", label);
-            option.dataset.densityOption = value;
-            option.setAttribute("aria-pressed", String(this.density === value));
-            option.addEventListener("click", () => {
-                if (this.density === value) return;
-                this.density = value;
-                try { localStorage.setItem(DENSITY_KEY, value); } catch { /* optional */ }
-                this.root.dataset.density = value;
-                for (const child of density.children) child.setAttribute("aria-pressed", String(child.dataset.densityOption === value));
-            });
-            density.append(option);
-        }
-        tools.append(density);
 
         bar.append(tools);
         return bar;

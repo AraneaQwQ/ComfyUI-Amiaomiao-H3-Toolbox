@@ -37,7 +37,7 @@ if (!document.getElementById("amiaomiao-h3-refs-style")) {
     const link = document.createElement("link");
     link.id = "amiaomiao-h3-refs-style";
     link.rel = "stylesheet";
-    link.href = new URL("./refs.css?v=20261127v", import.meta.url).href;
+    link.href = new URL("./refs.css?v=20261127x", import.meta.url).href;
     document.head.append(link);
 }
 

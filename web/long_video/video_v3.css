@@ -122,16 +122,149 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 11px;
+    padding: 13px 13px 15px;
     display: flex;
     flex-direction: column;
-    gap: 11px;
+    gap: 0;
     scrollbar-width: thin;
+}
+.ahr.ahv3 .ahv3-rail-scroll > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 15px;
+    padding-top: 15px;
+    border-top: 1px solid var(--v3-line);
 }
 .ahr.ahv3 .ahv3-rail-group {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
+}
+
+/* Unified Bottom-Left Free Card-Size Slider Footer (matches H3 参考素材) */
+.ahr.ahv3 .ahv3-rail-foot {
+    flex: none;
+    padding: 10px 13px 12px;
+    border-top: 1px solid var(--v3-line-strong);
+    background: var(--v3-sub);
+}
+.ahr.ahv3 .ahv3-scale-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.ahr.ahv3 .ahv3-scale-lbl {
+    flex: none;
+    font-size: calc(12px * var(--h3-font-scale, 1));
+    font-weight: var(--h3-weight-ui, 600);
+    color: var(--ahr-muted);
+    white-space: nowrap;
+    user-select: none;
+    cursor: pointer;
+}
+.ahr.ahv3 .ahv3-scale-slider {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: 1 1 auto;
+    min-width: 72px;
+    height: 22px;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    cursor: pointer;
+}
+.ahr.ahv3 .ahv3-scale-slider:focus-visible { outline: none; }
+.ahr.ahv3 .ahv3-scale-slider::-webkit-slider-runnable-track {
+    height: 5px;
+    border-radius: 999px;
+    background: linear-gradient(
+        to right,
+        var(--ahr-accent) 0%,
+        var(--ahr-accent) var(--slider-pct, 31.25%),
+        var(--v3-line-strong) var(--slider-pct, 31.25%),
+        var(--v3-line-strong) 100%
+    );
+}
+.ahr.ahv3 .ahv3-scale-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -4.5px;
+    border-radius: 50%;
+    border: 2px solid var(--v3-input);
+    background: var(--ahr-accent);
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.48), 0 0 0 1px var(--v3-accent-glow);
+    transition: transform 110ms ease, box-shadow 110ms ease;
+}
+.ahr.ahv3 .ahv3-scale-slider:hover::-webkit-slider-thumb,
+.ahr.ahv3 .ahv3-scale-slider:active::-webkit-slider-thumb {
+    transform: scale(1.14);
+    box-shadow: 0 0 0 3px var(--v3-accent-glow), 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+.ahr.ahv3 .ahv3-scale-slider::-moz-range-track {
+    height: 5px;
+    border-radius: 999px;
+    background: var(--v3-line-strong);
+}
+.ahr.ahv3 .ahv3-scale-slider::-moz-range-progress {
+    height: 5px;
+    border-radius: 999px;
+    background: var(--ahr-accent);
+}
+.ahr.ahv3 .ahv3-scale-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--v3-input);
+    background: var(--ahr-accent);
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.48);
+}
+.ahr.ahv3 .ahv3-scale-val {
+    appearance: none;
+    flex: none;
+    min-width: 44px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 6px;
+    border: 1px solid var(--v3-accent-glow);
+    background: var(--ahr-accent-soft);
+    color: var(--ahr-accent);
+    font-family: var(--h3-font-mono, "Cascadia Mono", Consolas, ui-monospace, monospace);
+    font-size: calc(11.5px * var(--h3-font-scale, 1));
+    font-weight: var(--h3-weight-strong, 700);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 110ms ease, color 110ms ease, background-color 110ms ease;
+}
+.ahr.ahv3 .ahv3-scale-val.is-default {
+    border-color: var(--v3-line);
+    background: var(--v3-input);
+    color: var(--ahr-muted);
+}
+.ahr.ahv3 .ahv3-scale-val:hover {
+    border-color: var(--ahr-accent);
+    color: var(--ahr-text);
+}
+.ahr.ahv3.ahv3-cutter .ahv3-scale-slider::-webkit-slider-runnable-track {
+    background: linear-gradient(
+        to right,
+        var(--ahr-video) 0%,
+        var(--ahr-video) var(--slider-pct, 31.25%),
+        var(--v3-line-strong) var(--slider-pct, 31.25%),
+        var(--v3-line-strong) 100%
+    );
+}
+.ahr.ahv3.ahv3-cutter .ahv3-scale-slider::-webkit-slider-thumb,
+.ahr.ahv3.ahv3-cutter .ahv3-scale-slider::-moz-range-thumb {
+    background: var(--ahr-video);
+    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.48), 0 0 0 1px color-mix(in srgb, var(--ahr-video) 55%, transparent);
+}
+.ahr.ahv3.ahv3-cutter .ahv3-scale-slider::-moz-range-progress { background: var(--ahr-video); }
+.ahr.ahv3.ahv3-cutter .ahv3-scale-val:not(.is-default) {
+    border-color: color-mix(in srgb, var(--ahr-video) 45%, transparent);
+    background: var(--v3-video-soft);
+    color: var(--ahr-video);
 }
 .ahr.ahv3 .ahv3-rail-label {
     display: flex;
@@ -806,22 +939,19 @@
 }
 .ahr.ahv3 .ahv3-stage-scroll:focus-visible { outline: 1px solid var(--ahr-accent); outline-offset: -2px; }
 
-/* ---------- Deck Grid & Cards ---------- */
+/* ---------- Deck Grid & Cards (Smooth 50%–200% Free Card-Size Slider Scaling) ---------- */
 .ahr.ahv3 .ahv3-deck {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 205px), 1fr));
-    gap: 11px;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(45px + 160px * var(--h3-card-scale, 1))), 1fr));
+    gap: clamp(7px, calc(4px + 7px * var(--h3-card-scale, 1)), 18px);
     align-items: start;
     align-content: start;
 }
-.ahr.ahv3[data-density="xlarge"] .ahv3-deck {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 315px), 1fr));
-    gap: 13px;
-}
-.ahr.ahv3[data-density="medium"] .ahv3-deck {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 158px), 1fr));
-    gap: 9px;
-}
+.ahr.ahv3[data-compact-cards="1"] .ahv3-card-body { padding: 6px 8px 8px; gap: 4px; }
+.ahr.ahv3[data-compact-cards="1"] .ahv3-card-title { font-size: calc(12px * var(--h3-font-scale, 1)); }
+.ahr.ahv3[data-compact-cards="1"] .ahv3-card-facts { font-size: calc(11px * var(--h3-font-scale, 1)); }
+.ahr.ahv3[data-compact-cards="1"] .ahv3-card-btn { height: 23px; padding: 0 6px; font-size: calc(11px * var(--h3-font-scale, 1)); }
+.ahr.ahv3[data-compact-cards="1"] .ahv3-card-ico { width: 23px; min-width: 23px; height: 23px; }
 .ahr.ahv3 .ahv3-empty {
     grid-column: 1 / -1;
     padding: 22px 14px;

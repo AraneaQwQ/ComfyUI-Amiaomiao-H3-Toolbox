@@ -76,9 +76,9 @@ function mediaCard({ name, badge, badgeKind = "video", imageUrl, durationText = 
 }
 
 export function installVideoV3(node, cut) {
-    stylesheet("amiaomiao-h3-refs-style", "../refs/refs.css?v=20261127v");
-    stylesheet("amiaomiao-h3-ui-theme-style", "../refs/ui_theme.css?v=20261127u");
-    stylesheet("amiaomiao-ahv3", "./video_v3.css?v=20261127q");
+    stylesheet("amiaomiao-h3-refs-style", "../refs/refs.css?v=20261127x");
+    stylesheet("amiaomiao-h3-ui-theme-style", "../refs/ui_theme.css?v=20261127w");
+    stylesheet("amiaomiao-ahv3", "./video_v3.css?v=20261127s");
 
     const lifetime = new AbortController();
     const { signal } = lifetime;
@@ -90,7 +90,7 @@ export function installVideoV3(node, cut) {
         widget.options.hidden = true;
     }
 
-    const { root, subtitleEl, rail, railScroll, stage, toast, refreshDensity } = createShell(
+    const { root, subtitleEl, rail, railScroll, railFoot, stage, toast, refreshDensity } = createShell(
         node,
         cut ? "H3 视频裁切 V3" : "H3 长视频拼接 V3",
         cut ? "定长裁切 · 24fps" : "双采片段",
@@ -426,7 +426,7 @@ export function installVideoV3(node, cut) {
         reportBox.hidden = true;
 
         dock.append(dockHead, filmPlayer, dockActs, reportBox);
-        rail.append(dock);
+        rail.insertBefore(dock, railFoot);
 
         filmPlayer.addEventListener("error", () => toast("无法内联播放成片，可点大屏或下载后查看。", true));
         signal.addEventListener("abort", () => {

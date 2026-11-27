@@ -319,7 +319,7 @@ app.registerExtension({
             const stylesheet = document.createElement("link");
             stylesheet.id = "amiaomiao-h3-ui-theme-style";
             stylesheet.rel = "stylesheet";
-            stylesheet.href = new URL("./ui_theme.css?v=20261127u", import.meta.url).href;
+            stylesheet.href = new URL("./ui_theme.css?v=20261127w", import.meta.url).href;
             document.head.append(stylesheet);
         }
         applyDisplaySettings();

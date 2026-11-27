@@ -2,7 +2,7 @@ import {
     LIMITS, KIND_NAMES, PURPOSES, VIDEO_SIZES, UPLOAD_ROOT, customVideoSide, decodedVideoSize, planImageSize, parseDocument, serializeDocument,
     assignLabels, soundtrackLabels, manifestText, addCards, removeCard, placeCard, splitCards, activeCount, setAllSkip, clearCards,
     nameFromFile, mediaKind, projectFolder, formatSeconds, trimWindow, newId, libraryKey, matchLibrary,
-    toPresetEntries, fromPresetEntries, CARD_DENSITIES, normalizeCardDensity,
+    toPresetEntries, fromPresetEntries,
 } from "./refs_state.js";
 import { openLibraryBrowser } from "./library_browser.js";
 
@@ -13,9 +13,35 @@ const FILTER_NONE = "__none__";
 // Node inputs that only affect images; the hub hides them and shows them on the image page.
 export const IMAGE_SETTINGS = ["target_megapixels", "resampling_method", "upscale_small_images"];
 const RESAMPLE_OPTIONS = ["Lanczos", "Bicubic", "Bilinear", "Nearest"];
-const DENSITY_SHORT = { xlarge: "特大", large: "大", medium: "中" };
+const CARD_SCALE_MIN = 0.50;
+const CARD_SCALE_MAX = 2.00;
+const CARD_SCALE_STEP = 0.05;
+const CARD_SCALE_DEFAULT = 1.00;
 const SHOW_NOTES_KEY = "amiaomiao-h3.hub.show-notes";
 const peakCache = new Map();
+
+function normalizeCardScale(value, legacyDensity) {
+    const raw = Number(value);
+    if (Number.isFinite(raw) && raw > 0) {
+        const normalized = raw > 10 ? raw / 100 : raw;
+        const clamped = Math.min(CARD_SCALE_MAX, Math.max(CARD_SCALE_MIN, normalized));
+        return Math.round(clamped / CARD_SCALE_STEP) * CARD_SCALE_STEP;
+    }
+    if (legacyDensity === "medium") return 0.80;
+    if (legacyDensity === "xlarge" || legacyDensity === "extra") return 1.45;
+    return CARD_SCALE_DEFAULT;
+}
+function scaleToLegacyDensity(scale) {
+    if (scale <= 0.85) return "medium";
+    if (scale >= 1.30) return "xlarge";
+    return "large";
+}
+function scalePercent(scale) {
+    return `${Math.round(scale * 100)}%`;
+}
+function scaleProgress(scale) {
+    return `${((scale - CARD_SCALE_MIN) / (CARD_SCALE_MAX - CARD_SCALE_MIN)) * 100}%`;
+}
 
 function readShowNotes() {
     try {
@@ -190,9 +216,11 @@ export class RefHubPanel {
         this.labels = assignLabels(this.doc);
 
         const page = this.doc.ui.page;
-        const density = normalizeCardDensity(this.doc.ui.density);
+        const cardScale = normalizeCardScale(this.doc.ui.card_scale, this.doc.ui.density);
         this.root.dataset.page = page;
-        this.root.dataset.density = density;
+        this.root.dataset.density = "custom";
+        this.root.dataset.compactCards = cardScale <= 0.75 ? "1" : "0";
+        this.root.style.setProperty("--h3-card-scale", cardScale.toFixed(2));
         this.root.dataset.imageView = this.imageViewMode();
         this.root.dataset.audioLayout = this.audioLayoutMode();
         this.root.dataset.hideNotes = this.showNotes ? "0" : "1";
@@ -228,13 +256,13 @@ export class RefHubPanel {
         this.renderTagFilterInto(this.tagFilterHost, page);
         this.railScroll.append(this.tagFilterHost);
 
-        // Left Rail Footer: Show-Notes Switch + Card Density (特大/大/中) & Copy Manifest
+        // Left Rail Footer: Show-Notes Switch + Copy Manifest + Unified Free Card-Size Slider
         const railFoot = el("div", "hub-rail-foot");
 
-        const notesRow = el("div", "hub-rail-notes-row");
+        const footTools = el("div", "hub-rail-foot-tools");
+        const notesRow = el("label", "hub-rail-notes-row");
         notesRow.title = "开启或关闭所有素材卡片的描述/备注输入框（不影响用途标签，也不会删除已写的备注内容）";
-        const notesLabel = el("span", "hub-rail-notes-lbl", "显示备注输入");
-        const notesToggle = el("label", "hub-toggle hub-notes-toggle");
+        const notesToggle = el("span", "hub-toggle hub-notes-toggle");
         const notesCheck = el("input");
         notesCheck.type = "checkbox";
         notesCheck.checked = this.showNotes;
@@ -246,39 +274,51 @@ export class RefHubPanel {
             requestAnimationFrame(() => this.drawWaveforms());
         });
         notesToggle.append(notesCheck, el("span", "hub-switch"));
-        notesRow.append(notesLabel, notesToggle);
+        notesRow.append(notesToggle, el("span", "hub-rail-notes-lbl", "显示备注"));
 
-        const footMain = el("div", "hub-rail-foot-main");
-        const densityGroup = el("div", "hub-seg ahr-density");
-        densityGroup.setAttribute("role", "group");
-        densityGroup.setAttribute("aria-label", "卡片尺寸");
-        for (const [value, , label] of CARD_DENSITIES) {
-            const option = el("button", "", DENSITY_SHORT[value] || label);
-            option.type = "button";
-            option.title = label;
-            option.setAttribute("aria-label", label);
-            option.dataset.densityOption = value;
-            option.setAttribute("aria-pressed", String(density === value));
-            option.addEventListener("click", () => {
-                const previous = this.root.dataset.density;
-                if (previous === value) return;
-                this.doc.ui.density = value;
-                if (this.doc.ui.page === "audio" || previous === "xlarge" || value === "xlarge") {
-                    this.save(true);
-                    this.root.querySelector(`.ahr-density [data-density-option="${value}"]`)?.focus();
-                    return;
-                }
-                this.root.dataset.density = value;
-                this.save();
-                for (const child of densityGroup.children) child.setAttribute("aria-pressed", String(child.dataset.densityOption === value));
-                requestAnimationFrame(() => this.drawWaveforms());
-            });
-            densityGroup.append(option);
-        }
-        const copyBtn = textButton("清单", "copy", () => this.copyManifest(), "hub-btn");
+        const copyBtn = textButton("清单", "copy", () => this.copyManifest(), "hub-btn hub-copy-btn");
         copyBtn.title = "复制当前启用的素材清单";
-        footMain.append(densityGroup, copyBtn);
-        railFoot.append(notesRow, footMain);
+        footTools.append(notesRow, copyBtn);
+
+        const scaleRow = el("div", "hub-scale-row");
+        const scaleLabel = el("span", "hub-scale-lbl", "卡片大小");
+        scaleLabel.title = "拖动自由调节右侧卡片显示比例（双击恢复 100%）";
+        const scaleSlider = el("input", "hub-scale-slider");
+        scaleSlider.type = "range";
+        scaleSlider.min = String(CARD_SCALE_MIN);
+        scaleSlider.max = String(CARD_SCALE_MAX);
+        scaleSlider.step = String(CARD_SCALE_STEP);
+        scaleSlider.value = cardScale.toFixed(2);
+        scaleSlider.style.setProperty("--slider-pct", scaleProgress(cardScale));
+        scaleSlider.setAttribute("aria-label", "卡片显示大小");
+        scaleSlider.title = "左右拖动自由调节卡片大小（双击恢复 100%）";
+        const scaleVal = el("button", "hub-scale-val", scalePercent(cardScale));
+        scaleVal.type = "button";
+        scaleVal.title = "点击恢复默认 100%";
+
+        const applyScale = (nextRaw, commit = false) => {
+            const next = normalizeCardScale(nextRaw);
+            this.doc.ui.card_scale = Number(next.toFixed(2));
+            this.doc.ui.density = scaleToLegacyDensity(next);
+            scaleSlider.value = next.toFixed(2);
+            scaleSlider.style.setProperty("--slider-pct", scaleProgress(next));
+            scaleVal.textContent = scalePercent(next);
+            scaleVal.classList.toggle("is-default", Math.abs(next - CARD_SCALE_DEFAULT) < 0.001);
+            this.root.style.setProperty("--h3-card-scale", next.toFixed(2));
+            this.root.dataset.compactCards = next <= 0.75 ? "1" : "0";
+            requestAnimationFrame(() => this.drawWaveforms());
+            if (commit) this.save();
+        };
+        scaleVal.classList.toggle("is-default", Math.abs(cardScale - CARD_SCALE_DEFAULT) < 0.001);
+        scaleSlider.addEventListener("pointerdown", event => event.stopPropagation());
+        scaleSlider.addEventListener("input", () => applyScale(scaleSlider.value, false));
+        scaleSlider.addEventListener("change", () => applyScale(scaleSlider.value, true));
+        scaleSlider.addEventListener("dblclick", () => applyScale(CARD_SCALE_DEFAULT, true));
+        scaleLabel.addEventListener("dblclick", () => applyScale(CARD_SCALE_DEFAULT, true));
+        scaleVal.addEventListener("click", () => applyScale(CARD_SCALE_DEFAULT, true));
+
+        scaleRow.append(scaleLabel, scaleSlider, scaleVal);
+        railFoot.append(footTools, scaleRow);
 
         rail.append(railHead, this.railScroll, railFoot);
 
@@ -595,6 +635,11 @@ export class RefHubPanel {
         this.stageCountBadge = el("span", "hub-stage-badge", `${activeCount(this.doc, kind)} / ${LIMITS[kind]}`);
         title.append(this.stageCountBadge);
         left.append(title);
+        if (kind === "audio") {
+            const tip = el("span", "hub-stage-tip", "划选裁切 · 拖两边滑块微调 · 双击重置");
+            tip.title = "在波形上按住拖选裁切区间；裁切后可拖动左右两边滑块微调或拖动选区平移，双击重置全长";
+            left.append(tip);
+        }
 
         const activeFilter = this.purposeFilters[kind] || FILTER_ALL;
         if (activeFilter !== FILTER_ALL) {
@@ -1896,9 +1941,87 @@ export class RefHubPanel {
         });
     }
 
-    // Drag across waveform to visually select trim [start, duration]; double-click to reset full length.
+    syncWaveSelection(waveWrap, total, card) {
+        const sel = waveWrap?.querySelector(".hub-wave-sel");
+        if (!sel) return;
+        if (!(total > 0)) {
+            sel.hidden = true;
+            waveWrap.classList.remove("is-trimmed");
+            return;
+        }
+        const { start, end } = trimWindow(total, card.start, card.duration);
+        const trimmed = start > 0.01 || end < total - 0.01;
+        const leftPct = Math.max(0, Math.min(100, (start / total) * 100));
+        const rightPct = Math.max(leftPct, Math.min(100, (end / total) * 100));
+        sel.hidden = false;
+        sel.style.left = `${leftPct}%`;
+        sel.style.width = `${Math.max(0.5, rightPct - leftPct)}%`;
+        sel.classList.toggle("is-trimmed", trimmed);
+        waveWrap.classList.toggle("is-trimmed", trimmed);
+    }
+
+    buildAudioWaveBox(card, strip = false) {
+        const waveWrap = el("div", strip ? "hub-wave-wrap is-strip" : "hub-wave-wrap");
+        const wave = el("canvas", "ahr-wave");
+        wave.dataset.id = card.id;
+
+        const sel = el("div", "hub-wave-sel");
+        sel.hidden = true;
+        const leftHandle = el("span", "hub-wave-handle is-left");
+        leftHandle.dataset.trimEdge = "start";
+        leftHandle.title = "拖动微调起点";
+        const rightHandle = el("span", "hub-wave-handle is-right");
+        rightHandle.dataset.trimEdge = "end";
+        rightHandle.title = "拖动微调终点";
+        sel.append(leftHandle, rightHandle);
+
+        const timePill = el("span", "hub-wave-time ahr-audio-info");
+        timePill.dataset.info = card.id;
+        waveWrap.append(wave, sel, timePill);
+        return { waveWrap, wave };
+    }
+
+    // Drag waveform edges to fine-tune start/end, drag inside trimmed range to slide, drag outside to select new range, dblclick to reset.
     bindWaveScrubTrim(waveWrap, canvas, card, onSyncUi) {
         const key = this.audioCardKey(card);
+        const EDGE_HIT_PX = 12;
+        const MIN_TRIM_SEC = 0.1;
+        const round1 = value => Math.round(value * 10) / 10;
+
+        const detectMode = (clientX, target) => {
+            const total = this.audioDurations.get(key);
+            if (!total || !(total > 0)) return "scrub";
+            const rect = waveWrap.getBoundingClientRect();
+            if (!rect.width) return "scrub";
+            const { start, end } = trimWindow(total, card.start, card.duration);
+            const trimmed = start > 0.01 || end < total - 0.01;
+            const leftPx = rect.left + (start / total) * rect.width;
+            const rightPx = rect.left + (end / total) * rect.width;
+            const distL = Math.abs(clientX - leftPx);
+            const distR = Math.abs(clientX - rightPx);
+
+            const edgeEl = target?.closest?.(".hub-wave-handle[data-trim-edge]");
+            if (edgeEl) {
+                if (distL <= EDGE_HIT_PX && distR <= EDGE_HIT_PX) {
+                    return distL <= distR ? "start" : "end";
+                }
+                return edgeEl.dataset.trimEdge === "start" ? "start" : "end";
+            }
+            if (distL <= EDGE_HIT_PX && distL <= distR) return "start";
+            if (distR <= EDGE_HIT_PX) return "end";
+            if (trimmed && clientX > leftPx && clientX < rightPx) return "move";
+            return "scrub";
+        };
+
+        waveWrap.addEventListener("pointermove", event => {
+            if (waveWrap.classList.contains("is-scrubbing")) return;
+            const hoverMode = detectMode(event.clientX, event.target);
+            waveWrap.dataset.hoverMode = hoverMode;
+        });
+        waveWrap.addEventListener("pointerleave", () => {
+            if (!waveWrap.classList.contains("is-scrubbing")) delete waveWrap.dataset.hoverMode;
+        });
+
         waveWrap.addEventListener("dblclick", event => {
             event.preventDefault();
             event.stopPropagation();
@@ -1924,6 +2047,11 @@ export class RefHubPanel {
             const secAt = cx => Math.max(0, Math.min(total, ((cx - rect.left) / rect.width) * total));
             const startX = event.clientX;
             const t0 = secAt(startX);
+            const mode = detectMode(startX, event.target);
+            const orig = trimWindow(total, card.start, card.duration);
+            const origOpenEnd = Number(card.duration) === 0 && orig.end >= total - 0.05;
+            const windowLen = Math.max(MIN_TRIM_SEC, orig.end - orig.start);
+            const moveThreshold = mode === "scrub" ? 4 : 1;
             let moved = false;
 
             const teardown = () => {
@@ -1931,24 +2059,54 @@ export class RefHubPanel {
                 window.removeEventListener("pointerup", onUp, true);
                 window.removeEventListener("pointercancel", onCancel, true);
                 waveWrap.classList.remove("is-scrubbing");
+                delete waveWrap.dataset.dragMode;
                 this.pointerDragCleanup = null;
+            };
+
+            const applyAt = cx => {
+                const t = secAt(cx);
+                if (mode === "start") {
+                    const maxStart = Math.max(0, orig.end - MIN_TRIM_SEC);
+                    let nextStart = Math.max(0, Math.min(maxStart, t));
+                    if (nextStart <= 0.05) nextStart = 0;
+                    nextStart = round1(nextStart);
+                    card.start = nextStart;
+                    card.duration = origOpenEnd ? 0 : Math.max(MIN_TRIM_SEC, round1(orig.end - nextStart));
+                } else if (mode === "end") {
+                    const minEnd = Math.min(total, orig.start + MIN_TRIM_SEC);
+                    const nextEnd = Math.max(minEnd, Math.min(total, t));
+                    card.start = round1(orig.start);
+                    card.duration = nextEnd >= total - 0.05 ? 0 : Math.max(MIN_TRIM_SEC, round1(nextEnd - orig.start));
+                } else if (mode === "move") {
+                    const deltaSec = ((cx - startX) / rect.width) * total;
+                    const maxStart = Math.max(0, total - windowLen);
+                    let nextStart = Math.max(0, Math.min(maxStart, orig.start + deltaSec));
+                    if (nextStart <= 0.05) nextStart = 0;
+                    const nextEnd = Math.min(total, nextStart + windowLen);
+                    card.start = round1(nextStart);
+                    card.duration = nextEnd >= total - 0.05 && nextStart <= 0.05 ? 0 : Math.max(MIN_TRIM_SEC, round1(windowLen));
+                } else {
+                    const a = Math.min(t0, t);
+                    const b = Math.max(t0, t);
+                    const nextStart = a <= 0.05 ? 0 : round1(a);
+                    card.start = nextStart;
+                    card.duration = b >= total - 0.05 && nextStart === 0 ? 0 : Math.max(MIN_TRIM_SEC, round1(b - nextStart));
+                }
+                onSyncUi?.();
+                this.syncWaveSelection(waveWrap, total, card);
+                this.drawWaveform(canvas, card);
             };
 
             const onMove = e2 => {
                 if (!moved) {
-                    if (Math.abs(e2.clientX - startX) < 4) return;
+                    if (Math.abs(e2.clientX - startX) < moveThreshold) return;
                     moved = true;
                     waveWrap.classList.add("is-scrubbing");
+                    waveWrap.dataset.dragMode = mode;
                 }
                 e2.preventDefault();
                 e2.stopPropagation();
-                const t1 = secAt(e2.clientX);
-                const a = Math.min(t0, t1);
-                const b = Math.max(t0, t1);
-                card.start = Math.round(a * 10) / 10;
-                card.duration = Math.max(0.1, Math.round((b - a) * 10) / 10);
-                onSyncUi?.();
-                this.drawWaveform(canvas, card);
+                applyAt(e2.clientX);
             };
 
             const onUp = () => {
@@ -1958,7 +2116,8 @@ export class RefHubPanel {
                 this.save();
                 this.drawWaveform(canvas, card);
                 const { start, end } = trimWindow(total, card.start, card.duration);
-                this.toast(`已框选裁切 ${formatSeconds(start)}–${formatSeconds(end)}（双击波形重置）`);
+                const verb = mode === "start" ? "已微调起点" : mode === "end" ? "已微调终点" : mode === "move" ? "已平移选区" : "已框选裁切";
+                this.toast(`${verb} ${formatSeconds(start)}–${formatSeconds(end)}`);
             };
 
             const onCancel = () => teardown();
@@ -2066,15 +2225,9 @@ export class RefHubPanel {
         acts.append(toggleBtn, delBtn);
         r1.append(grip, play, badge, name, purpose, acts);
 
-        // Row 2: Interactive Scrub Waveform + Inline Start/Duration Trim
+        // Row 2: Interactive Scrub Waveform + Left/Right Trim Handles + Inline Start/Duration Trim
         const r2 = el("div", "hub-aud-r2");
-        const waveWrap = el("div", "hub-wave-wrap");
-        waveWrap.title = "按住左右拖动划选裁切区间，双击重置为全长";
-        const wave = el("canvas", "ahr-wave");
-        wave.dataset.id = card.id;
-        const timePill = el("span", "hub-wave-time ahr-audio-info");
-        timePill.dataset.info = card.id;
-        waveWrap.append(wave, timePill, el("span", "hub-wave-hint", "拖动划选区间 · 双击重置"));
+        const { waveWrap, wave } = this.buildAudioWaveBox(card, false);
 
         const trimGroup = el("div", "hub-aud-trim");
         const startCtl = this.buildAudioTrimInput(card, "start", "起", "截取起始时间（秒，负数表示从结尾倒数）", wave);
@@ -2159,13 +2312,7 @@ export class RefHubPanel {
         purpose.classList.add("hub-aud-mini-purpose");
         idCol.append(idTop, purpose);
 
-        const waveWrap = el("div", "hub-wave-wrap is-strip");
-        waveWrap.title = "按住左右拖动划选裁切区间，双击重置为全长";
-        const wave = el("canvas", "ahr-wave");
-        wave.dataset.id = card.id;
-        const timePill = el("span", "hub-wave-time ahr-audio-info");
-        timePill.dataset.info = card.id;
-        waveWrap.append(wave, timePill, el("span", "hub-wave-hint", "拖选裁切 · 双击重置"));
+        const { waveWrap, wave } = this.buildAudioWaveBox(card, true);
 
         const acts = el("div", "hub-row-acts");
         const drawerBtn = el("button", "ahr-btn hub-btn hub-aud-drawer-btn");
@@ -3129,7 +3276,7 @@ export class RefHubPanel {
         const x1 = data.duration > 0 ? (start / data.duration) * width : 0;
         const x2 = data.duration > 0 ? (end / data.duration) * width : width;
         if (trimmed) {
-            context.fillStyle = "rgba(240, 180, 90, 0.12)";
+            context.fillStyle = "rgba(240, 180, 90, 0.14)";
             context.fillRect(x1, 0, Math.max(2 * ratio, x2 - x1), height);
         }
 
@@ -3141,11 +3288,8 @@ export class RefHubPanel {
             context.fillRect(index * bar + bar * 0.15, (height - h) / 2, Math.max(1, bar * 0.7), h);
         });
 
-        if (trimmed) {
-            context.fillStyle = "rgba(240, 180, 90, 0.88)";
-            context.fillRect(x1, 0, Math.max(1, 1.5 * ratio), height);
-            context.fillRect(Math.max(0, x2 - Math.max(1, 1.5 * ratio)), 0, Math.max(1, 1.5 * ratio), height);
-        }
+        const waveWrap = canvas.closest(".hub-wave-wrap");
+        if (waveWrap) this.syncWaveSelection(waveWrap, data.duration, card);
 
         if (this.audio && this.previewAudioId === card.id && data.duration > 0) {
             const px = Math.max(0, Math.min(width - 2 * ratio, (this.audio.currentTime / data.duration) * width));
